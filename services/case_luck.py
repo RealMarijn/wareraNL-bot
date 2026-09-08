@@ -1,15 +1,21 @@
-"""Shared case-opening transaction fetching for luck calculations.
+"""Shared case-opening data fetching for luck calculations.
 
-Used by the daily NL sweep (cogs/tasks/luck.py), the global sweep
-(cogs/tasks/global_luck.py), and the /geluk + /globalluck commands.
+extract_case_counts() is now the primary path — user.getUserById's
+stats.case1.byRarity / stats.case2.byRarity (confirmed live) already give
+each player's full lifetime case-opening rarity counts directly, for the
+cost of one (batchable) API call per player instead of paginating their
+entire transaction.getPaginatedTransactions history. Used by the daily NL
+sweep (cogs/tasks/luck.py), the global sweep (cogs/tasks/global_luck.py),
+and the live single-player refresh in /geluk + /globalluck.
 
-transaction.getPaginatedTransactions pages newest-first (confirmed by direct
-API testing: page 1 starts at the most recent transaction, each following
-page continues further back in time). That makes an incremental fetch cheap:
-page from the start and stop as soon as a transaction's _id <= cutoff_id is
-reached — everything from there on was already counted by a previous call.
-Without a cutoff, every sweep/command call re-fetched a player's ENTIRE
-lifetime case-opening history from scratch, every time.
+fetch_case_transactions()/merge_counts() are kept only for the one thing
+byRarity genuinely can't do: "most recent N cases" (aantal_cases in /geluk
+and /globalluck), which needs newest-first per-transaction ordering that a
+lifetime cumulative counter doesn't carry. transaction.getPaginatedTransactions
+pages newest-first (confirmed by direct API testing: page 1 starts at the
+most recent transaction, each following page continues further back in
+time) — that's what lets that one path stop early once it's collected
+enough recent opens, rather than paging a player's whole history.
 """
 
 from __future__ import annotations
@@ -21,6 +27,50 @@ from typing import Optional
 RARITY_KEYS = ["mythic", "legendary", "epic", "rare", "uncommon", "common"]
 
 logger = logging.getLogger("discord_bot")
+
+
+def _unwrap(resp: object) -> object:
+    if not isinstance(resp, dict):
+        return resp
+    for key in ("result", "data"):
+        v = resp.get(key)
+        if isinstance(v, dict):
+            return v.get("data", v)
+    return resp
+
+
+def extract_case_counts(
+    user_doc: object,
+) -> Optional[tuple[dict[str, int], dict[str, int]]]:
+    """Pull (normal_counts, elite_counts) out of one user.getUserById response.
+
+    Lives at stats.case1.byRarity / stats.case2.byRarity (confirmed live) —
+    case1 is normal cases, case2 is elite cases. Missing rarities (0 opens
+    of that rarity) are simply absent from the API's dict rather than
+    present with a 0, so every RARITY_KEYS entry is defaulted to 0 here to
+    match the shape the rest of the codebase (rarity_json, luck-score math)
+    expects. Returns None if stats/case1/case2 aren't present at all (e.g.
+    the API call for this user failed upstream and returned something else).
+    """
+    data = _unwrap(user_doc)
+    if not isinstance(data, dict):
+        return None
+    stats = data.get("stats")
+    if not isinstance(stats, dict):
+        return None
+    case1 = stats.get("case1")
+    case2 = stats.get("case2")
+    if not isinstance(case1, dict) and not isinstance(case2, dict):
+        return None
+    case1_rarity = case1.get("byRarity") if isinstance(case1, dict) else None
+    case2_rarity = case2.get("byRarity") if isinstance(case2, dict) else None
+    normal_counts = {
+        r: int((case1_rarity or {}).get(r, 0) or 0) for r in RARITY_KEYS
+    }
+    elite_counts = {
+        r: int((case2_rarity or {}).get(r, 0) or 0) for r in RARITY_KEYS
+    }
+    return normal_counts, elite_counts
 
 
 async def fetch_case_transactions(

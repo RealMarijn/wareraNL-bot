@@ -170,29 +170,6 @@ class LuckMixin:
                 best = entry
         return best
 
-    async def get_luck_entries_for_country(self, country_id: str) -> dict[str, dict]:
-        """Bulk-load existing citizen_luck rows for a country, keyed by user_id.
-
-        Used by the daily sweep to preload prior counts + last_seen_transaction_id
-        for every citizen in one query, instead of one query per citizen.
-        """
-        result: dict[str, dict] = {}
-        async with self._conn.execute(
-            """
-            SELECT user_id, rarity_json, elite_rarity_json, last_seen_transaction_id
-            FROM citizen_luck
-            WHERE country_id = ?
-            """,
-            (country_id,),
-        ) as cur:
-            async for row in cur:
-                result[row[0]] = {
-                    "rarity_json": row[1],
-                    "elite_rarity_json": row[2],
-                    "last_seen_transaction_id": row[3],
-                }
-        return result
-
     async def delete_luck_scores_not_in(
         self, country_id: str, keep_user_ids: list[str]
     ) -> None:
@@ -302,25 +279,6 @@ class LuckMixin:
         """
         await self._conn.execute("DELETE FROM global_citizen_luck")
         await self._conn.commit()
-
-    async def get_all_global_luck_entries(self) -> dict[str, dict]:
-        """Bulk-load existing global_citizen_luck rows, keyed by user_id.
-
-        Used by the global sweep to preload prior counts + last_seen_transaction_id
-        for every citizen in one query, instead of one query per citizen.
-        """
-        result: dict[str, dict] = {}
-        async with self._conn.execute(
-            "SELECT user_id, rarity_json, elite_rarity_json, last_seen_transaction_id "
-            "FROM global_citizen_luck"
-        ) as cur:
-            async for row in cur:
-                result[row[0]] = {
-                    "rarity_json": row[1],
-                    "elite_rarity_json": row[2],
-                    "last_seen_transaction_id": row[3],
-                }
-        return result
 
     async def delete_global_luck_scores_not_in(self, keep_user_ids: list[str]) -> None:
         """Remove global_citizen_luck rows whose user_id isn't in keep_user_ids.

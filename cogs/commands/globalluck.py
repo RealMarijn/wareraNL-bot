@@ -20,7 +20,7 @@ from discord.ext import commands
 
 from cogs.commands._base import citizen_autocomplete, fmt_nl_time
 from services.api_client import APIClient
-from services.case_luck import fetch_case_transactions, merge_counts
+from services.case_luck import extract_case_counts
 
 if TYPE_CHECKING:
     from bot import DiscordBot
@@ -546,67 +546,61 @@ class GlobalLuck(commands.Cog, name="globalluck"):
                 else "🔴 Live"
             )
         elif live and (client := await self._get_client()) is not None:
-            cutoff_id = target.get("last_seen_transaction_id")
-            prior_raw = target.get("rarity_json")
-            prior_normal = json.loads(prior_raw) if prior_raw else {}
-            prior_elite_raw = target.get("elite_rarity_json")
-            prior_elite = json.loads(prior_elite_raw) if prior_elite_raw else {}
-            item_rarities = await self._get_item_rarities()
-            delta_normal, delta_elite, newest_id, fetched = await fetch_case_transactions(
-                client, user_id, item_rarities, cutoff_id=cutoff_id
-            )
-            if cutoff_id:
-                # True incremental fetch — delta is only what's new since
-                # cutoff_id, so add it onto the existing cached counts.
-                normal_counts = merge_counts(prior_normal, delta_normal)
-                elite_counts = merge_counts(prior_elite, delta_elite)
-            else:
-                # No cutoff (never cached, OR a cached row whose
-                # last_seen_transaction_id is still NULL — e.g. every row
-                # that predates this column). fetch_case_transactions had
-                # nothing to stop early at, so it already paged the player's
-                # ENTIRE history — delta_normal/delta_elite ARE the full,
-                # authoritative totals. Merging them onto prior_normal/
-                # prior_elite here would double-count everything the cached
-                # row already had.
-                normal_counts = delta_normal
-                elite_counts = delta_elite
-            new_cutoff = newest_id or cutoff_id
-            opens = sum(normal_counts.values())
-            luck_score = _calc_luck_score(normal_counts, opens)
-            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            elite_total_live = sum(elite_counts.values())
-            elite_luck_for_db = (
-                _calc_elite_luck_score(elite_counts, elite_total_live)
-                if elite_total_live >= 5 else None
-            )
+            # One fresh user.getUserById call gives the full, authoritative
+            # lifetime rarity counts directly via stats.case1/case2.byRarity —
+            # no more incremental "since last cutoff" transaction
+            # fetching/merging needed, that field already IS the merged total.
             try:
-                await db.upsert_global_luck_score(
-                    user_id, country_id, username, luck_score, opens,
-                    json.dumps(normal_counts), now_iso,
-                    elite_luck_score=elite_luck_for_db,
-                    elite_opens_count=elite_total_live if elite_total_live >= 5 else None,
-                    elite_rarity_json=json.dumps(elite_counts) if elite_total_live >= 5 else None,
-                    last_seen_transaction_id=new_cutoff,
+                raw = await client.get(
+                    "/user.getUserById", params={"input": json.dumps({"userId": user_id})}
                 )
-                await db.flush_global_luck_scores()
-                if not_yet_ranked:
-                    # This player just got their first row — re-fetch rank
-                    # positions now that the comparison subquery has something
-                    # to compare against.
-                    rank, _total = await db.get_global_luck_rank(user_id)
-                    elite_rank, elite_rank_total = await db.get_global_luck_rank_elite(user_id)
-                    combined_rank, _combined_total = await db.get_global_luck_rank_combined(user_id)
-                    rank_str = f"#{rank:,}" if rank is not None else "not ranked"
-                    elite_rank_str = f"#{elite_rank:,}" if elite_rank is not None else "not ranked"
-                    combined_rank_str = f"#{combined_rank:,}" if combined_rank is not None else "not ranked"
-            except Exception:
-                logger.exception("globalluck: failed to persist live-refreshed luck score")
-            analysis_note = (
-                f"🔴 Live — {fetched} new since last update"
-                if cutoff_id else
-                "🔴 Live — full history fetched"
-            )
+            except Exception as exc:
+                logger.warning("globalluck: live user.getUserById failed for %s: %s", user_id, exc)
+                raw = None
+            counts = extract_case_counts(raw) if raw is not None else None
+
+            if counts is None:
+                # Live fetch failed — fall back to whatever's cached (may be
+                # empty for a never-before-seen player).
+                counts_raw = target.get("rarity_json")
+                normal_counts = json.loads(counts_raw) if counts_raw else {}
+                elite_raw = target.get("elite_rarity_json")
+                elite_counts = json.loads(elite_raw) if elite_raw else {}
+                opens = target.get("opens_count") or 0
+                luck_score = target.get("luck_score") or 0.0
+                analysis_note = "⚠️ Live-update mislukt — gecachete data" if not not_yet_ranked else "⚠️ Live-update mislukt"
+            else:
+                normal_counts, elite_counts = counts
+                opens = sum(normal_counts.values())
+                luck_score = _calc_luck_score(normal_counts, opens)
+                now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                elite_total_live = sum(elite_counts.values())
+                elite_luck_for_db = (
+                    _calc_elite_luck_score(elite_counts, elite_total_live)
+                    if elite_total_live >= 5 else None
+                )
+                try:
+                    await db.upsert_global_luck_score(
+                        user_id, country_id, username, luck_score, opens,
+                        json.dumps(normal_counts), now_iso,
+                        elite_luck_score=elite_luck_for_db,
+                        elite_opens_count=elite_total_live if elite_total_live >= 5 else None,
+                        elite_rarity_json=json.dumps(elite_counts) if elite_total_live >= 5 else None,
+                    )
+                    await db.flush_global_luck_scores()
+                    if not_yet_ranked:
+                        # This player just got their first row — re-fetch rank
+                        # positions now that the comparison subquery has something
+                        # to compare against.
+                        rank, _total = await db.get_global_luck_rank(user_id)
+                        elite_rank, elite_rank_total = await db.get_global_luck_rank_elite(user_id)
+                        combined_rank, _combined_total = await db.get_global_luck_rank_combined(user_id)
+                        rank_str = f"#{rank:,}" if rank is not None else "not ranked"
+                        elite_rank_str = f"#{elite_rank:,}" if elite_rank is not None else "not ranked"
+                        combined_rank_str = f"#{combined_rank:,}" if combined_rank is not None else "not ranked"
+                except Exception:
+                    logger.exception("globalluck: failed to persist live-refreshed luck score")
+                analysis_note = "🔴 Live — actual data direct from the WarEra API"
         else:
             # Fall back to cached data
             counts_raw = target.get("rarity_json")
