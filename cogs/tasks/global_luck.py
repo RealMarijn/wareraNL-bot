@@ -1,4 +1,4 @@
-"""Background task: global luck score refresh for all citizens in all countries."""
+"""Background task: global luck score refresh for all citizens in all countries, twice a day."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from discord.ext import tasks
 
 from cogs.tasks._base import TaskCogBase
-from services.case_luck import fetch_case_transactions, merge_counts
+from services.case_luck import extract_case_counts
 
 logger = logging.getLogger("discord_bot")
 
@@ -98,10 +98,10 @@ class GlobalLuckTasks(TaskCogBase, name="global_luck_tasks"):
         self.global_luck_refresh.cancel()
 
     # ------------------------------------------------------------------ #
-    # Periodic global luck sweep (once per day)                           #
+    # Periodic global luck sweep (twice per day)                          #
     # ------------------------------------------------------------------ #
 
-    @tasks.loop(hours=24)
+    @tasks.loop(hours=12)
     async def global_luck_refresh(self) -> None:
         """Calculate and cache luck scores for all citizens in the game."""
         if not self._client or not self._db:
@@ -114,16 +114,17 @@ class GlobalLuckTasks(TaskCogBase, name="global_luck_tasks"):
 
         now_utc = datetime.now(timezone.utc)
 
-        # 23-hour cooldown guard
+        # 10-hour cooldown guard (prevents double-runs on restart within the
+        # same ~12h window, while still allowing the next scheduled run through)
         try:
             last_run_str = await self._db.get_poll_state("global_luck_refresh_last_run")
             if last_run_str:
                 elapsed_h = (
                     now_utc - datetime.fromisoformat(last_run_str)
                 ).total_seconds() / 3600
-                if elapsed_h < 23:
+                if elapsed_h < 10:
                     logger.info(
-                        "global_luck_refresh: skipping — last run %.1fh ago (< 23h)",
+                        "global_luck_refresh: skipping — last run %.1fh ago (< 10h)",
                         elapsed_h,
                     )
                     return
@@ -139,7 +140,8 @@ class GlobalLuckTasks(TaskCogBase, name="global_luck_tasks"):
     async def before_global_luck_refresh(self) -> None:
         await self._wait_for_services()
         # Align to next 09:00 UTC — same as the NL luck sweep so both rankings
-        # are always based on data from the same run.
+        # are always based on data from the same run. The hours=12 loop then
+        # keeps firing every 12h from that anchor, i.e. 09:00 and 21:00 UTC.
         await asyncio.sleep(_seconds_until_hour(9))
 
     async def run_global_luck_refresh(self) -> None:
@@ -162,23 +164,6 @@ class GlobalLuckTasks(TaskCogBase, name="global_luck_tasks"):
         except Exception:
             logger.exception("global_luck_refresh: failed to save last-run state")
 
-        # Load item rarity map
-        try:
-            raw = await self._client.get(
-                "/gameConfig.getGameConfig", params={"input": "{}"}
-            )
-            data = (
-                raw.get("result", {}).get("data", raw) if isinstance(raw, dict) else {}
-            )
-            item_rarities: dict[str, str] = {
-                code: item.get("rarity")
-                for code, item in (data.get("items") or {}).items()
-                if item.get("rarity")
-            }
-        except Exception:
-            logger.exception("global_luck_refresh: failed to load item rarities")
-            return
-
         # All citizens across all countries (from citizen_levels cache)
         citizens = await self._db.get_all_citizens_for_global_luck()
         total = len(citizens)
@@ -190,43 +175,34 @@ class GlobalLuckTasks(TaskCogBase, name="global_luck_tasks"):
             )
             return
 
-        # Preload every citizen's prior counts + cutoff in one query instead
-        # of wiping the whole table and re-fetching each player's ENTIRE
-        # lifetime case history from scratch every sweep.
-        # transaction.getPaginatedTransactions pages newest-first, so
-        # fetch_case_transactions can stop as soon as it reaches
-        # last_seen_transaction_id — only new opens since the last sweep get
-        # fetched, and their counts are added onto the old ones.
-        prior_entries = await self._db.get_all_global_luck_entries()
+        # One tRPC-batched user.getUserById call for every citizen (~100 per
+        # HTTP request — see APIClient.batch_get) instead of paginating each
+        # citizen's entire openCase transaction history. stats.case1.byRarity/
+        # case2.byRarity are already lifetime cumulative totals, so no
+        # incremental/cutoff bookkeeping is needed anymore either. This is a
+        # citizen-scale sweep (tens of thousands of citizens) just like
+        # wealth_refresh's — held under the same _heavy_api_lock as that and
+        # the other heavy sweeps so they don't all hammer the API key pool
+        # at once (see the caller, which already holds it).
+        try:
+            raw_results = await self._client.batch_get(
+                "/user.getUserById",
+                [{"userId": uid} for uid, _cid, _name in citizens],
+                batch_size=100,
+                chunk_sleep=0.3,
+            )
+        except Exception:
+            logger.exception("global_luck_refresh: user.getUserById batch fetch failed")
+            return
 
         recorded = 0
-        for i, (user_id, country_id, citizen_name) in enumerate(citizens):
+        updated_at = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        for i, ((user_id, country_id, citizen_name), raw) in enumerate(zip(citizens, raw_results)):
             try:
-                prior = prior_entries.get(user_id)
-                prior_normal = json.loads(prior["rarity_json"]) if prior and prior.get("rarity_json") else {}
-                prior_elite = json.loads(prior["elite_rarity_json"]) if prior and prior.get("elite_rarity_json") else {}
-                cutoff_id = prior.get("last_seen_transaction_id") if prior else None
-
-                delta_normal, delta_elite, newest_id, _fetched = await fetch_case_transactions(
-                    self._client, user_id, item_rarities, cutoff_id=cutoff_id
-                )
-                if cutoff_id:
-                    # True incremental fetch — delta is only what's new since
-                    # cutoff_id, so add it onto the existing counts.
-                    normal_counts = merge_counts(prior_normal, delta_normal)
-                    elite_counts = merge_counts(prior_elite, delta_elite)
-                else:
-                    # No cutoff (first-ever scan, OR an existing row whose
-                    # last_seen_transaction_id is still NULL — e.g. every row
-                    # that predates this column). fetch_case_transactions had
-                    # nothing to stop early at, so it already paged the
-                    # player's ENTIRE history — delta_normal/delta_elite ARE
-                    # the full, authoritative totals. Merging them onto
-                    # prior_normal/prior_elite here would double-count
-                    # everything the prior row already had.
-                    normal_counts = delta_normal
-                    elite_counts = delta_elite
-                new_cutoff = newest_id or cutoff_id
+                counts = extract_case_counts(raw)
+                if counts is None:
+                    continue
+                normal_counts, elite_counts = counts
 
                 total_opens = sum(normal_counts.values())
                 if total_opens < MIN_OPENS:
@@ -234,7 +210,6 @@ class GlobalLuckTasks(TaskCogBase, name="global_luck_tasks"):
                 luck_pct = _calc_luck_pct(normal_counts, total_opens)
                 elite_total = sum(elite_counts.values())
                 elite_luck_pct = _calc_elite_luck_pct(elite_counts, elite_total) if elite_total >= 5 else None
-                updated_at = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
                 await self._db.upsert_global_luck_score(
                     user_id,
                     country_id,
@@ -246,7 +221,6 @@ class GlobalLuckTasks(TaskCogBase, name="global_luck_tasks"):
                     elite_luck_score=elite_luck_pct,
                     elite_opens_count=elite_total if elite_total >= 5 else None,
                     elite_rarity_json=json.dumps(elite_counts) if elite_total >= 5 else None,
-                    last_seen_transaction_id=new_cutoff,
                 )
                 recorded += 1
             except Exception:
@@ -254,12 +228,10 @@ class GlobalLuckTasks(TaskCogBase, name="global_luck_tasks"):
                     "global_luck_refresh: error processing user %s", user_id
                 )
 
-            # Batch flush + rate-limit pause every 10 users
-            if (i + 1) % 10 == 0:
+            if (i + 1) % 200 == 0:
                 await self._db.flush_global_luck_scores()
-                await asyncio.sleep(1.0)
 
-            if (i + 1) % 100 == 0:
+            if (i + 1) % 1000 == 0:
                 logger.info(
                     "global_luck_refresh: %d/%d processed, %d scored so far",
                     i + 1,

@@ -19,7 +19,7 @@ from discord.ext import commands
 
 from cogs.commands._base import citizen_autocomplete, strip_division_prefix
 from services.api_client import APIClient
-from services.case_luck import fetch_case_transactions, merge_counts
+from services.case_luck import extract_case_counts
 from services.key_loader import load_api_keys
 
 if TYPE_CHECKING:
@@ -802,86 +802,72 @@ class Geluk(commands.Cog, name="geluk"):
                     logger.warning("Geluk: cache lookup failed: %s", exc)
 
             if live:
-                # Realtime mode: fetch only NEW transactions since the cache's
-                # last-seen cutoff (or a full history fetch if this player has
-                # never been cached), merge onto the cached counts, and
-                # persist the merged result — so the daily sweep and future
-                # cache-hit calls both benefit from this fresher cutoff too.
-                cutoff_id = cached_entry.get("last_seen_transaction_id") if cached_entry else None
-                prior_normal = (
-                    json.loads(cached_entry["rarity_json"])
-                    if cached_entry and cached_entry.get("rarity_json") else {}
-                )
-                prior_elite = (
-                    json.loads(cached_entry["elite_rarity_json"])
-                    if cached_entry and cached_entry.get("elite_rarity_json") else {}
-                )
-                item_rarities = await self._get_item_rarities()
+                # Realtime mode: one fresh user.getUserById call gives the
+                # full, authoritative lifetime rarity counts directly via
+                # stats.case1/case2.byRarity — no more incremental
+                # "since last cutoff" transaction fetching/merging needed,
+                # that field already IS the merged total.
                 client = await self._get_client()
-                delta_normal, delta_elite, newest_id, fetched = await fetch_case_transactions(
-                    client, resolved_user_id, item_rarities, cutoff_id=cutoff_id
-                )
-                if cutoff_id:
-                    # True incremental fetch — delta is only what's new since
-                    # cutoff_id, so add it onto the existing cached counts.
-                    merged_normal = merge_counts(prior_normal, delta_normal)
-                    merged_elite = merge_counts(prior_elite, delta_elite)
-                else:
-                    # No cutoff (never cached, OR a cached row whose
-                    # last_seen_transaction_id is still NULL — e.g. every row
-                    # that predates this column). fetch_case_transactions had
-                    # nothing to stop early at, so it already paged the
-                    # player's ENTIRE history — delta_normal/delta_elite ARE
-                    # the full, authoritative totals. Merging them onto
-                    # prior_normal/prior_elite here would double-count
-                    # everything the cached row already had (this is exactly
-                    # how a player's case count got reported at ~2x reality).
-                    merged_normal = delta_normal
-                    merged_elite = delta_elite
-                new_cutoff = newest_id or cutoff_id
-                total_opens = sum(merged_normal.values())
-                elite_total = sum(merged_elite.values())
-                luck_val = calc_luck_pct(merged_normal, total_opens)
-                elite_luck_val = calc_elite_luck_pct(merged_elite, elite_total) if elite_total >= 5 else None
-                now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                try:
+                    raw = await client.get(
+                        "/user.getUserById",
+                        params={"input": json.dumps({"userId": resolved_user_id})},
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Geluk: live user.getUserById failed for %s: %s", resolved_user_id, exc
+                    )
+                    raw = None
+                counts = extract_case_counts(raw) if raw is not None else None
 
-                _nl_cid = self.config.get("nl_country_id", "")
-                _player_country = (profile.get("country") or "") if profile else ""
-                if db_cache and _nl_cid and _player_country == _nl_cid:
-                    try:
-                        await db_cache.upsert_luck_score(
-                            resolved_user_id, _nl_cid, username, luck_val, total_opens,
-                            json.dumps(merged_normal), now_iso,
-                            elite_luck_score=elite_luck_val,
-                            elite_opens_count=elite_total if elite_total >= 5 else None,
-                            elite_rarity_json=json.dumps(merged_elite) if elite_total >= 5 else None,
-                            last_seen_transaction_id=new_cutoff,
-                        )
-                        await db_cache.flush_luck_scores()
-                    except Exception:
-                        logger.exception("Geluk: failed to persist live-refreshed luck score")
+                if counts is not None:
+                    merged_normal, merged_elite = counts
+                    total_opens = sum(merged_normal.values())
+                    elite_total = sum(merged_elite.values())
+                    luck_val = calc_luck_pct(merged_normal, total_opens)
+                    elite_luck_val = calc_elite_luck_pct(merged_elite, elite_total) if elite_total >= 5 else None
+                    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-                synthetic_entry = {
-                    "user_id": resolved_user_id,
-                    "citizen_name": username,
-                    "country_id": _player_country,
-                    "luck_score": luck_val,
-                    "opens_count": total_opens,
-                    "rarity_json": json.dumps(merged_normal),
-                    "updated_at": now_iso,
-                    "elite_luck_score": elite_luck_val,
-                    "elite_opens_count": elite_total if elite_total >= 5 else None,
-                    "elite_rarity_json": json.dumps(merged_elite) if elite_total >= 5 else None,
-                }
-                live_note = (
-                    f"🔴 Live — {fetched} nieuwe case(s) opgehaald sinds laatste update"
-                    if cutoff_id else
-                    "🔴 Live — volledige case-geschiedenis opgehaald"
-                )
-                await self._send_cached_luck_result(
-                    interaction, db_cache, synthetic_entry, type, note=live_note
-                )
-                return
+                    _nl_cid = self.config.get("nl_country_id", "")
+                    _player_country = (profile.get("country") or "") if profile else ""
+                    if db_cache and _nl_cid and _player_country == _nl_cid:
+                        try:
+                            await db_cache.upsert_luck_score(
+                                resolved_user_id, _nl_cid, username, luck_val, total_opens,
+                                json.dumps(merged_normal), now_iso,
+                                elite_luck_score=elite_luck_val,
+                                elite_opens_count=elite_total if elite_total >= 5 else None,
+                                elite_rarity_json=json.dumps(merged_elite) if elite_total >= 5 else None,
+                            )
+                            await db_cache.flush_luck_scores()
+                        except Exception:
+                            logger.exception("Geluk: failed to persist live-refreshed luck score")
+
+                    synthetic_entry = {
+                        "user_id": resolved_user_id,
+                        "citizen_name": username,
+                        "country_id": _player_country,
+                        "luck_score": luck_val,
+                        "opens_count": total_opens,
+                        "rarity_json": json.dumps(merged_normal),
+                        "updated_at": now_iso,
+                        "elite_luck_score": elite_luck_val,
+                        "elite_opens_count": elite_total if elite_total >= 5 else None,
+                        "elite_rarity_json": json.dumps(merged_elite) if elite_total >= 5 else None,
+                    }
+                    await self._send_cached_luck_result(
+                        interaction, db_cache, synthetic_entry, type,
+                        note="🔴 Live — actuele data direct van de WarEra API",
+                    )
+                    return
+
+                # Live fetch failed — fall back to whatever's cached, if anything.
+                if cached_entry is not None:
+                    await self._send_cached_luck_result(
+                        interaction, db_cache, cached_entry, type,
+                        note="⚠️ Live-update mislukt — gecachete data wordt weergegeven.",
+                    )
+                    return
 
             if cached_entry is not None:
                 await self._send_cached_luck_result(interaction, db_cache, cached_entry, type)
@@ -1250,15 +1236,20 @@ class Geluk(commands.Cog, name="geluk"):
             details = await db.get_citizen_details_by_ids([uid])
             player_country = details.get(uid, {}).get("country_id", "")
 
-            item_rarities = await self._get_item_rarities()
             client = await self._get_client()
-            normal_counts, elite_counts, newest_id, _fetched = await fetch_case_transactions(
-                client, uid, item_rarities
-            )
+            try:
+                raw = await client.get(
+                    "/user.getUserById", params={"input": json.dumps({"userId": uid})}
+                )
+            except Exception as exc:
+                logger.warning("caserang: live user.getUserById failed for %s: %s", uid, exc)
+                raw = None
+            counts = extract_case_counts(raw) if raw is not None else None
+            normal_counts, elite_counts = counts if counts is not None else ({}, {})
             total_opens = sum(normal_counts.values())
             elite_total = sum(elite_counts.values())
 
-            if player_country:
+            if player_country and counts is not None:
                 try:
                     luck_val = calc_luck_pct(normal_counts, total_opens)
                     elite_luck_val = calc_elite_luck_pct(elite_counts, elite_total) if elite_total >= 5 else None
@@ -1269,7 +1260,6 @@ class Geluk(commands.Cog, name="geluk"):
                         elite_luck_score=elite_luck_val,
                         elite_opens_count=elite_total if elite_total >= 5 else None,
                         elite_rarity_json=json.dumps(elite_counts) if elite_total >= 5 else None,
-                        last_seen_transaction_id=newest_id,
                     )
                     await db.flush_global_luck_scores()
                 except Exception:
