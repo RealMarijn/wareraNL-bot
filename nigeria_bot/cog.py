@@ -53,6 +53,7 @@ DUTCH_NIGERIAN_ROLE_IDS = [1495692212594409482, 1503755103037817052]  # Dutch pl
 VAKANTIEGANGER_ROLE_ID  = DUTCH_NIGERIAN_ROLE_IDS[1]  # "Vakantieganger" — Dutch player currently in Nigeria
 DUTCH_ROLE_ID           = 1495692245519699978
 VERIFIED_ROLE_ID        = 1521895797757575168   # given to everyone on approval
+VISITOR_ROLE_ID         = 1545090990728282204   # removed from everyone on approval
 
 # In-game country IDs, for the nationality-role sync in nick_sync.
 NIGERIA_COUNTRY_ID = "683ddd2c24b5a2e114af15fa"
@@ -62,6 +63,10 @@ STAFF_ROLE_IDS = [1495692303367540767, 1495692272728150016, 1495692461375357009,
 
 # Channels where the forbidden-word GIF reactions stay silent (e.g. #gheim).
 NO_REACTION_CHANNEL_IDS = {1523076659648008362}
+
+# Odds that a matched forbidden-word trigger actually fires a reaction —
+# used to be 100%, which got old fast.
+FORBIDDEN_WORD_REACTION_CHANCE = 0.10
 
 # ── @Roger business-proposal easter egg ───────────────────────────────────────
 # Tagging the bot makes it ask "Interested in a business proposal?".  Saying
@@ -253,6 +258,13 @@ FORBIDDEN_WORD_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...], bool], ...]
 _PROJECT_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _GEAR_IMAGE_PATH = os.path.join(_PROJECT_ROOT, "equipment-item-icons", "gear.png")
 _MYTHIC_GEAR_IMAGE_PATH = os.path.join(_PROJECT_ROOT, "nigeria_bot", "mythicgear.png")
+
+# Sent when someone says "dark odor" / "duistere geur" — one is picked at random.
+_DARK_ODOR_IMAGE_PATHS = [
+    os.path.join(_PROJECT_ROOT, "nigeria_bot", "images", "dark_odor_subway.png"),
+    os.path.join(_PROJECT_ROOT, "nigeria_bot", "images", "dark_odor_ad.png"),
+]
+_DARK_ODOR_TRIGGERS = ("dark odor", "duistere geur")
 
 AMBASSADOR_ROLES: dict[str, int] = {
     "Netherlands":             1495785962234577037,
@@ -932,6 +944,18 @@ async def _execute_approve(
     else:
         logger.warning("_execute_approve: Verified role %d not found in guild", VERIFIED_ROLE_ID)
 
+    # Visitor role is only for unverified members — drop it on approval.
+    visitor_role = guild.get_role(VISITOR_ROLE_ID)
+    if visitor_role and visitor_role in user.roles:
+        try:
+            reason = f"Verified by {approver}" if english else f"Geverifieerd door {approver}"
+            await user.remove_roles(visitor_role, reason=reason)
+        except discord.Forbidden:
+            if english:
+                errors.append(f"No permission to remove role **{visitor_role.name}**.")
+            else:
+                errors.append(f"Geen toegang om rol **{visitor_role.name}** te verwijderen.")
+
     if username:
         try:
             reason = f"WarEra name set by {approver}" if english else f"WarEra naam ingesteld door {approver}"
@@ -1213,6 +1237,21 @@ class VerificationCog(commands.Cog, name="verification"):
                 return
 
         content_lower = content.lower()
+
+        # Easter egg: "dark odor" / "duistere geur" gets a random reaction image.
+        if any(trigger in content_lower for trigger in _DARK_ODOR_TRIGGERS):
+            image_path = random.choice(_DARK_ODOR_IMAGE_PATHS)
+            if os.path.isfile(image_path):
+                try:
+                    await message.channel.send(
+                        file=discord.File(image_path, filename=os.path.basename(image_path))
+                    )
+                except discord.HTTPException as e:
+                    logger.error(f"Failed to send dark odor image for {message.id}: {e}")
+            else:
+                logger.warning("dark odor: image not found at %s", image_path)
+            return
+
         words = content_lower.split()
         for trigger_words, gifs, send_text in FORBIDDEN_WORD_GROUPS:
             # Multi-word triggers (e.g. "pyramid scheme") match as a substring
@@ -1223,6 +1262,8 @@ class VerificationCog(commands.Cog, name="verification"):
                 for tw in trigger_words
             ):
                 continue
+            if random.random() >= FORBIDDEN_WORD_REACTION_CHANCE:
+                return
             try:
                 if send_text:
                     await message.channel.send("Dat woord is niet toegestaan!")
@@ -1676,6 +1717,14 @@ class VerificationCog(commands.Cog, name="verification"):
                 await user.add_roles(verified_role, reason=f"Handmatig geverifieerd door {interaction.user}")
             except discord.Forbidden:
                 errors.append(f"Geen toegang om rol **{verified_role.name}** toe te voegen.")
+
+        # Visitor role is only for unverified members — drop it on approval.
+        visitor_role = guild.get_role(VISITOR_ROLE_ID)
+        if visitor_role and visitor_role in user.roles:
+            try:
+                await user.remove_roles(visitor_role, reason=f"Handmatig geverifieerd door {interaction.user}")
+            except discord.Forbidden:
+                errors.append(f"Geen toegang om rol **{visitor_role.name}** te verwijderen.")
 
         # Set nickname
         if username:

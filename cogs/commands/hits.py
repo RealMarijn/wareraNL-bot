@@ -40,6 +40,15 @@ side won't resolve; that shows as "onbekend" rather than a guess — this is
 a real ceiling, not a bug: the endpoint has no "look up just this user" or
 "which side is this user on" filter (confirmed live), so the only way to
 find a low-ranked player is to page through everyone ranked above them.
+
+Optional volledig=True (only meaningful together with loot=True) lifts that
+cap to _MAX_RANKING_PAGES_EXHAUSTIVE per scope+side instead of
+_MAX_RANKING_PAGES — i.e. keep paging until either both signals are found
+or the ranking genuinely runs out (no nextCursor left), rather than giving
+up early. Costs a lot more API calls and takes noticeably longer for a
+player buried deep in a huge battle's ranking, which is why it's opt-in
+rather than the default — the command warns about this up front before it
+starts.
 """
 
 from __future__ import annotations
@@ -66,6 +75,7 @@ _BATTLE_URL = "https://app.warera.io/battle/{battle_id}"
 _REQUEST_DELAY = 0.15
 _DESCRIPTION_CHAR_LIMIT = 3900  # embed description hard limit is 4096; leave headroom
 _MAX_RANKING_PAGES = 6  # per (scope, side) — bounds worst-case API calls per hit battle
+_MAX_RANKING_PAGES_EXHAUSTIVE = 100  # volledig=True — generous safety ceiling, not a real-world limit
 
 
 def _unwrap(resp: object) -> object:
@@ -118,9 +128,15 @@ def _fmt_int(n: object) -> str:
 
 
 async def _scan_ranking(
-    client, *, battle_id: str | None, round_id: str | None, side: str, user_id: str
+    client,
+    *,
+    battle_id: str | None,
+    round_id: str | None,
+    side: str,
+    user_id: str,
+    max_pages: int = _MAX_RANKING_PAGES,
 ) -> tuple[float | None, float | None, bool | None]:
-    """Page through battleRanking.getRanking (capped) for one scope+side.
+    """Page through battleRanking.getRanking (capped at max_pages) for one scope+side.
 
     Looks for two things at once: the target player's own entry, and the
     loot cutoff — the lowest damage value that still earned loot. Returns
@@ -133,7 +149,7 @@ async def _scan_ranking(
     player_value: float | None = None
     player_has_loot: bool | None = None
 
-    for _page in range(_MAX_RANKING_PAGES):
+    for _page in range(max_pages):
         payload: dict = {"dataType": "damage", "type": "user", "side": side, "limit": 100}
         if round_id:
             payload["roundId"] = round_id
@@ -177,7 +193,12 @@ async def _scan_ranking(
 
 
 async def _loot_status(
-    client, battle: dict, user_id: str, country_id: str | None
+    client,
+    battle: dict,
+    user_id: str,
+    country_id: str | None,
+    *,
+    max_pages: int = _MAX_RANKING_PAGES,
 ) -> tuple[str, str]:
     """Return (round_status, battle_status) display strings for one hit battle."""
     battle_id = str(battle.get("_id", ""))
@@ -205,7 +226,8 @@ async def _loot_status(
     for side in sides:
         if round_id and round_value is None:
             c, v, hl = await _scan_ranking(
-                client, battle_id=None, round_id=round_id, side=side, user_id=user_id
+                client, battle_id=None, round_id=round_id, side=side, user_id=user_id,
+                max_pages=max_pages,
             )
             if v is not None:
                 round_cutoff, round_value, round_has_loot = c, v, hl
@@ -213,7 +235,8 @@ async def _loot_status(
                 round_cutoff = c
         if battle_value is None:
             c, v, hl = await _scan_ranking(
-                client, battle_id=battle_id, round_id=None, side=side, user_id=user_id
+                client, battle_id=battle_id, round_id=None, side=side, user_id=user_id,
+                max_pages=max_pages,
             )
             if v is not None:
                 battle_cutoff, battle_value, battle_has_loot = c, v, hl
@@ -301,10 +324,15 @@ class HitsCog(CommandCogBase, name="hits"):
     @app_commands.describe(
         speler="Zoek een speler op naam (standaard: jezelf).",
         loot="Toon per geraakt gevecht of er ronde-/gevechtsloot binnen bereik is, en zo niet hoeveel schade nog nodig is.",
+        volledig="Alleen met loot:true — blijf zoeken tot alle loot-info gevonden is, i.p.v. te stoppen na een paar pagina's. Meer API-calls, kan veel langer duren.",
     )
     @app_commands.autocomplete(speler=citizen_autocomplete)
     async def hits(
-        self, ctx: Context, speler: Optional[str] = None, loot: bool = False
+        self,
+        ctx: Context,
+        speler: Optional[str] = None,
+        loot: bool = False,
+        volledig: bool = False,
     ) -> None:
         if not self._db or not self._client:
             await ctx.send("Database of API niet beschikbaar.")
@@ -318,8 +346,17 @@ class HitsCog(CommandCogBase, name="hits"):
             return
         user_id, citizen_name = target
 
+        max_pages = _MAX_RANKING_PAGES_EXHAUSTIVE if (loot and volledig) else _MAX_RANKING_PAGES
+
         if hasattr(ctx, "defer"):
             await ctx.defer()
+
+        if loot and volledig:
+            await ctx.send(
+                "🔍 Volledige loot-zoekopdracht aan — dit doet veel meer API-calls "
+                "en kan een stuk langer duren dan normaal.",
+                ephemeral=True,
+            )
 
         try:
             raw = await self._client.get(
@@ -391,7 +428,7 @@ class HitsCog(CommandCogBase, name="hits"):
                     line = f"[{label}]({url})"
                 if loot:
                     round_status, battle_status = await _loot_status(
-                        self._client, battle, user_id, country_id
+                        self._client, battle, user_id, country_id, max_pages=max_pages
                     )
                     line += f" | Ronde: {round_status} | Totaal: {battle_status}"
                 hit_lines.append(line)
