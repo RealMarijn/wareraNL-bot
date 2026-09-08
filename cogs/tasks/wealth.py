@@ -1,6 +1,6 @@
 """Background task: fetch wealth for all citizens and store in DB.
 
-Runs every 24 hours. Calls ``user.getUserById`` for every citizen we know
+Runs every 6 hours. Calls ``user.getUserById`` for every citizen we know
 about (via tRPC HTTP batching — see ``APIClient.batch_get``, ~100 citizens
 per HTTP request rather than one request each) and reads the total AND the
 per-category breakdown from each response's ``stats.wealth`` — confirmed
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from discord.ext import tasks
@@ -70,7 +70,7 @@ class WealthTasks(TaskCogBase, name="wealth_tasks"):
     def cog_unload(self) -> None:
         self.wealth_refresh.cancel()
 
-    @tasks.loop(time=time(4, 0, tzinfo=timezone.utc))
+    @tasks.loop(hours=6)
     async def wealth_refresh(self) -> None:
         if not self._client or not self._db:
             return
