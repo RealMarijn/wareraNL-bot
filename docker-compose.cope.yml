@@ -1,0 +1,20 @@
+services:
+
+  # ── COPErator — COPE alliance verification bot ──────────────────────────────
+  # Handles WarEra<->Discord verification and nickname/country-role sync for
+  # the COPE alliance server.
+  #
+  # Run with:
+  #   docker compose -f docker-compose.cope.yml up -d --force-recreate cope-bot
+  #
+  # Required .env values:
+  #   TOKEN_COPE   Discord bot token for the COPE alliance application
+
+  cope-bot:
+    build: .
+    image: warera-nl:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./database:/bot/database
+    command: ["python", "-m", "cope_bot.bot"]

@@ -35,6 +35,7 @@ repeats across that family:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Callable, Optional
 
 import discord
@@ -101,6 +102,58 @@ def format_openbaarheid(raw: str) -> str:
         suffix = f" — {rest}" if rest else ""
         return f":regional_indicator_c: Conditionele openbaarheid{suffix} (vanwege nationale veiligheid)"
     return s
+
+
+_VP_RE = re.compile(r"vice[\s-]?president|\bvp\b", re.IGNORECASE)
+_PRESIDENT_RE = re.compile(r"\bpresident\b", re.IGNORECASE)
+_MINISTERS_RE = re.compile(r"ministers?|regering", re.IGNORECASE)
+
+
+def parse_tag_extras(raw: str) -> tuple[bool, bool, bool]:
+    """Parse a free-text "who else to tag" field into (president, vice
+    president, ministers) flags.
+
+    Free text instead of the booleans/choices these used to be, now that
+    every congress-template command is a pure modal (see module
+    docstring) — TextInput is the only field type a Modal actually has.
+    Checked in this order so a typed "vicepresident" (one word) isn't also
+    counted as "president": _PRESIDENT_RE's \\b won't match inside
+    "vicepresident" either way (no word boundary before "president" there),
+    but keeping vice-president's own pattern checked as a whole is clearer
+    than relying on that alone.
+    """
+    text = raw or ""
+    return (
+        bool(_PRESIDENT_RE.search(text)),
+        bool(_VP_RE.search(text)),
+        bool(_MINISTERS_RE.search(text)),
+    )
+
+
+def build_tag_line(config: dict, tag_extras: str, *, base: str = "congreslid") -> str:
+    """congreslid (or *base*) always, plus whichever of president/vice
+    president/ministers were mentioned in the free-text *tag_extras* field."""
+    president, vicepresident, ministers = parse_tag_extras(tag_extras)
+    mentions = [role_mention(config, base)]
+    if president:
+        mentions.append(role_mention(config, "president"))
+    if vicepresident:
+        mentions.append(role_mention(config, "vice_president"))
+    if ministers:
+        mentions.append(role_mention(config, "government"))
+    return " ".join(m for m in mentions if m) or f"@{base.capitalize()}"
+
+
+def normalize_uitslag(raw: str) -> str:
+    """"aangenomen" / "geweigerd" from a free-text answer, or the raw text
+    unchanged if it doesn't clearly match either — same forgiving philosophy
+    as format_openbaarheid: never silently drop what the user typed."""
+    s = raw.strip().lower()
+    if s in ("aangenomen", "aan", "ja", "accepted", "passed", "goedgekeurd"):
+        return "aangenomen"
+    if s in ("geweigerd", "afgewezen", "nee", "rejected", "denied"):
+        return "geweigerd"
+    return raw.strip()
 
 
 def chunk_text(text: str, limit: int = MESSAGE_LIMIT) -> list[str]:
