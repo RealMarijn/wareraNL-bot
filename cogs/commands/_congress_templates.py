@@ -35,7 +35,6 @@ repeats across that family:
 from __future__ import annotations
 
 import logging
-import re
 from typing import Callable, Optional
 
 import discord
@@ -104,42 +103,36 @@ def format_openbaarheid(raw: str) -> str:
     return s
 
 
-_VP_RE = re.compile(r"vice[\s-]?president|\bvp\b", re.IGNORECASE)
-_PRESIDENT_RE = re.compile(r"\bpresident\b", re.IGNORECASE)
-_MINISTERS_RE = re.compile(r"ministers?|regering", re.IGNORECASE)
-
-
-def parse_tag_extras(raw: str) -> tuple[bool, bool, bool]:
-    """Parse a free-text "who else to tag" field into (president, vice
-    president, ministers) flags.
-
-    Free text instead of the booleans/choices these used to be, now that
-    every congress-template command is a pure modal (see module
-    docstring) — TextInput is the only field type a Modal actually has.
-    Checked in this order so a typed "vicepresident" (one word) isn't also
-    counted as "president": _PRESIDENT_RE's \\b won't match inside
-    "vicepresident" either way (no word boundary before "president" there),
-    but keeping vice-president's own pattern checked as a whole is clearer
-    than relying on that alone.
+def make_tag_select() -> discord.ui.Select:
+    """A fresh 0-3 multi-select "who else to tag" component for a modal —
+    the closest thing to checkboxes Discord's modal components actually
+    offer (there's no native checkbox item). Returns a new instance each
+    call since a Select, like a TextInput, is tied to one modal instance.
     """
-    text = raw or ""
-    return (
-        bool(_PRESIDENT_RE.search(text)),
-        bool(_VP_RE.search(text)),
-        bool(_MINISTERS_RE.search(text)),
+    return discord.ui.Select(
+        placeholder="Extra taggen (optioneel)",
+        min_values=0,
+        max_values=3,
+        required=False,
+        options=[
+            discord.SelectOption(label="President", value="president"),
+            discord.SelectOption(label="Vice President", value="vicepresident"),
+            discord.SelectOption(label="Ministers (regering)", value="ministers"),
+        ],
     )
 
 
-def build_tag_line(config: dict, tag_extras: str, *, base: str = "congreslid") -> str:
+def build_tag_line_from_selection(
+    config: dict, selected: list[str], *, base: str = "congreslid"
+) -> str:
     """congreslid (or *base*) always, plus whichever of president/vice
-    president/ministers were mentioned in the free-text *tag_extras* field."""
-    president, vicepresident, ministers = parse_tag_extras(tag_extras)
+    president/ministers were picked in a make_tag_select() selection."""
     mentions = [role_mention(config, base)]
-    if president:
+    if "president" in selected:
         mentions.append(role_mention(config, "president"))
-    if vicepresident:
+    if "vicepresident" in selected:
         mentions.append(role_mention(config, "vice_president"))
-    if ministers:
+    if "ministers" in selected:
         mentions.append(role_mention(config, "government"))
     return " ".join(m for m in mentions if m) or f"@{base.capitalize()}"
 

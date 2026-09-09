@@ -10,8 +10,9 @@ that's the full field count (who-else-to-tag plus the 4 template sections),
 so unlike /motie/​/stembureaupost this doesn't need a second chained modal.
 See cogs/commands/_congress_templates.py for why the description is a
 preceding message rather than in-modal text, and why "who else to tag" is a
-free-text field rather than command-option booleans (a pure-modal command
-has no command options at all).
+Select (make_tag_select — the closest thing to checkboxes a modal actually
+offers) rather than command-option booleans (a pure-modal command has no
+command options at all).
 """
 
 from __future__ import annotations
@@ -25,8 +26,9 @@ from cogs.commands._base import CommandCogBase
 from cogs.commands._congress_templates import (
     OpenFormView,
     allowed_guild_ids,
-    build_tag_line,
+    build_tag_line_from_selection,
     is_congress_member,
+    make_tag_select,
     send_template_chunks,
 )
 
@@ -46,13 +48,7 @@ class DebatModal(discord.ui.Modal, title="Nieuw debat"):
         super().__init__()
         self._config = config
 
-        self.tag_extra = discord.ui.TextInput(
-            label="Extra taggen (optioneel)",
-            style=discord.TextStyle.short,
-            max_length=100,
-            required=False,
-            placeholder="Bijv. president, vicepresident, ministers",
-        )
+        self.tag_select = make_tag_select()
         self.context = discord.ui.TextInput(
             label="Context / situatie",
             style=discord.TextStyle.paragraph,
@@ -78,11 +74,11 @@ class DebatModal(discord.ui.Modal, title="Nieuw debat"):
             placeholder="Richting bepalen, draagvlak peilen, informatie verzamelen, ...",
         )
 
-        for item in (self.tag_extra, self.context, self.vraag, self.voorstellen, self.doel):
+        for item in (self.tag_select, self.context, self.vraag, self.voorstellen, self.doel):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        tag_line = build_tag_line(self._config, str(self.tag_extra))
+        tag_line = build_tag_line_from_selection(self._config, self.tag_select.values)
         parts = [
             tag_line,
             "# Context / situatie",
