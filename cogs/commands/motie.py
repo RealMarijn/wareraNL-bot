@@ -17,15 +17,18 @@ for "samenvatting_allowed"-equivalent access) or server admins, matching
 Pure modal, no command options — a Discord modal can't be pre-filled from
 answers given elsewhere, so mixing slash-command options with a modal (the
 original design) made it look like whatever was typed into the options got
-thrown away the moment the modal opened. All 6 fields are TextInputs
-instead, split across two chained modals since a single modal caps out at 5
-(collect the short fields first, then the free-text "who else to tag" field
-opens a second modal for the two paragraph fields) — a modal submission's
-interaction can itself open another modal as its first response, same as
-any other interaction. Replies with the assembled motion text as one or
-more ephemeral, code-fenced messages (see _congress_templates.py) for the
-user to copy, tweak, and post themselves — the bot never posts a motion
-into a channel on anyone's behalf.
+thrown away the moment the modal opened. 6 fields total, split across two
+chained modals since a single modal caps out at 5 (the short fields first,
+including the "who else to tag" multi-select, then a second modal for the
+two paragraph fields) — a modal submission's interaction can itself open
+another modal as its first response, same as any other interaction. "Who
+else to tag" is a Select (make_tag_select in _congress_templates.py) rather
+than a TextInput — the closest thing to checkboxes a modal actually offers,
+picking 0-3 of president/vice-president/ministers from a dropdown instead
+of parsing free text. Replies with the assembled motion text as one or more
+ephemeral, code-fenced messages (see _congress_templates.py) for the user
+to copy, tweak, and post themselves — the bot never posts a motion into a
+channel on anyone's behalf.
 """
 
 from __future__ import annotations
@@ -38,9 +41,10 @@ from discord import app_commands
 from cogs.commands._base import CommandCogBase
 from cogs.commands._congress_templates import (
     allowed_guild_ids,
-    build_tag_line,
+    build_tag_line_from_selection,
     format_openbaarheid,
     is_congress_member,
+    make_tag_select,
     send_template_chunks,
 )
 
@@ -113,18 +117,12 @@ class MotieModal1(discord.ui.Modal, title="Nieuwe motie (1/2)"):
             style=discord.TextStyle.short,
             max_length=200,
         )
-        self.tag_extra = discord.ui.TextInput(
-            label="Extra taggen (optioneel)",
-            style=discord.TextStyle.short,
-            max_length=100,
-            required=False,
-            placeholder="Bijv. president, vicepresident, ministers",
-        )
-        for item in (self.titel, self.openbaarheid, self.onderwerp, self.tag_extra):
+        self.tag_select = make_tag_select()
+        for item in (self.titel, self.openbaarheid, self.onderwerp, self.tag_select):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        tag_line = build_tag_line(self._config, str(self.tag_extra))
+        tag_line = build_tag_line_from_selection(self._config, self.tag_select.values)
         await interaction.response.send_modal(
             MotieModal2(
                 tag_line=tag_line,
