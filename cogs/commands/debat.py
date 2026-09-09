@@ -2,17 +2,14 @@
 draad in #debatruimtes.
 
 Same production+war-guild / congress-role gating as /motie — see
-cogs/commands/motie.py's docstring. Shows an explanatory message (how to
-actually start the Discord thread — the bot doesn't do that part, since
-"New Post" in a forum channel isn't something a bot can trigger on a
-user's behalf) with an "open form" button, then a single 5-field modal —
-that's the full field count (who-else-to-tag plus the 4 template sections),
-so unlike /motie/​/stembureaupost this doesn't need a second chained modal.
-See cogs/commands/_congress_templates.py for why the description is a
-preceding message rather than in-modal text, and why "who else to tag" is a
-Select (make_tag_select — the closest thing to checkboxes a modal actually
-offers) rather than command-option booleans (a pure-modal command has no
-command options at all).
+cogs/commands/motie.py's docstring, including why "who else to tag" is
+three boolean command options rather than a modal Select (tried first,
+rejected by Discord's API in practice). Shows an explanatory message (how
+to actually start the Discord thread — the bot doesn't do that part, since
+"New Post" in a forum channel isn't something a bot can trigger on a user's
+behalf) with an "open form" button, then a single 4-field modal. See
+cogs/commands/_congress_templates.py for why the description is a
+preceding message rather than in-modal text.
 """
 
 from __future__ import annotations
@@ -26,9 +23,8 @@ from cogs.commands._base import CommandCogBase
 from cogs.commands._congress_templates import (
     OpenFormView,
     allowed_guild_ids,
-    build_tag_line_from_selection,
+    build_tag_line,
     is_congress_member,
-    make_tag_select,
     send_template_chunks,
 )
 
@@ -44,11 +40,10 @@ _DESCRIPTION = (
 
 
 class DebatModal(discord.ui.Modal, title="Nieuw debat"):
-    def __init__(self, *, config: dict) -> None:
+    def __init__(self, *, tag_line: str) -> None:
         super().__init__()
-        self._config = config
+        self._tag_line = tag_line
 
-        self.tag_select = make_tag_select()
         self.context = discord.ui.TextInput(
             label="Context / situatie",
             style=discord.TextStyle.paragraph,
@@ -74,13 +69,12 @@ class DebatModal(discord.ui.Modal, title="Nieuw debat"):
             placeholder="Richting bepalen, draagvlak peilen, informatie verzamelen, ...",
         )
 
-        for item in (self.tag_select, self.context, self.vraag, self.voorstellen, self.doel):
+        for item in (self.context, self.vraag, self.voorstellen, self.doel):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        tag_line = build_tag_line_from_selection(self._config, self.tag_select.values)
         parts = [
-            tag_line,
+            self._tag_line,
             "# Context / situatie",
             str(self.context).strip(),
             "# Vraag / probleemstelling",
@@ -103,7 +97,18 @@ class DebatCog(CommandCogBase, name="debat"):
         name="debat",
         description="Maak de startpost-inhoud voor een nieuw debat in #debatruimtes.",
     )
-    async def debat(self, interaction: discord.Interaction) -> None:
+    @app_commands.describe(
+        president="Tag ook de President.",
+        vicepresident="Tag ook de Vice-President.",
+        ministers="Tag ook de Regering (ministers).",
+    )
+    async def debat(
+        self,
+        interaction: discord.Interaction,
+        president: bool = False,
+        vicepresident: bool = False,
+        ministers: bool = False,
+    ) -> None:
         if not interaction.guild or interaction.guild.id not in allowed_guild_ids(self.config):
             await interaction.response.send_message(
                 "❌ Dit commando is hier niet beschikbaar.",
@@ -120,9 +125,10 @@ class DebatCog(CommandCogBase, name="debat"):
             )
             return
 
+        tag_line = build_tag_line(self.config, president, vicepresident, ministers)
         await interaction.response.send_message(
             content=_DESCRIPTION,
-            view=OpenFormView(lambda: DebatModal(config=self.config)),
+            view=OpenFormView(lambda: DebatModal(tag_line=tag_line)),
             ephemeral=True,
         )
 

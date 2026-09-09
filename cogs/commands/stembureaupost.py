@@ -8,14 +8,27 @@ vote concerns the whole congress plus presidential oversight by design).
 
 Pure modal, no command options — see cogs/commands/motie.py's docstring for
 why. This template has 8 variable spots (titel, debat-link, openbaarheid,
-onderwerp, motie, stappenplan, and the two stem-toelichtingen), so it's
-split across two chained modals of 4 fields each: the first collects the
-short/single-line fields, its on_submit opens a second modal for the
-free-text paragraphs, and THAT modal's on_submit assembles and sends the
-final text. The "## Stemming" tally section is intentionally left as a
-literal placeholder (counts + closing date aren't known yet at creation
-time) — filled in by hand once the vote closes, same as in the template
-this mirrors.
+onderwerp, motie, stappenplan, and the two stem-toelichtingen), so it's two
+modals of 4 fields each — but NOT chained directly. Chaining
+(modal1.on_submit calling response.send_modal() for modal2) is technically
+legal in discord.py but Discord's API rejects the payload discord.py 2.6.4
+sends for a modal opened FROM a modal-submit interaction specifically
+(confirmed live: HTTPException 400, "In type: Value must be one of {4, 5,
+6, 7, 10, 12}" — see cogs/commands/motie.py's docstring for the full
+diagnosis). So modal1's on_submit instead shows a short ephemeral
+confirmation with a button (OpenFormView, same helper /debat uses for its
+description step), and clicking THAT button opens modal2 — a button->modal
+is a completely different, unaffected code path.
+
+The majority-threshold sentence ("meerderheid van N stemmen... X
+stemgerechtigden") is built from a live government.getByCountryId call
+(fetch_congress_majority) rather than hardcoded — the Dutch congress's
+member count changes with monthly elections, and the old hardcoded 18/35
+had already gone stale (real count was 33 members / majority 17 when this
+was fixed). The vote-tally section itself ("## Stemming" with (Aantal)
+placeholders and a closing-date line) was dropped entirely per explicit
+request — that's handled by /stembureauarchiefpost once the vote closes,
+not needed in the opening post.
 """
 
 from __future__ import annotations
@@ -27,7 +40,10 @@ from discord import app_commands
 
 from cogs.commands._base import CommandCogBase
 from cogs.commands._congress_templates import (
+    OpenFormView,
     allowed_guild_ids,
+    fetch_congress_majority,
+    format_half,
     format_openbaarheid,
     is_congress_member,
     role_mention,
@@ -40,6 +56,7 @@ logger = logging.getLogger("discord_bot")
 class StembureauPostModal2(discord.ui.Modal, title="Nieuwe stemronde (2/2)"):
     def __init__(
         self, *, tag_line: str, titel: str, debat_link: str, openbaarheid_line: str, onderwerp: str,
+        client, config: dict,
     ) -> None:
         super().__init__()
         self._tag_line = tag_line
@@ -47,6 +64,8 @@ class StembureauPostModal2(discord.ui.Modal, title="Nieuwe stemronde (2/2)"):
         self._debat_link = debat_link
         self._openbaarheid_line = openbaarheid_line
         self._onderwerp = onderwerp
+        self._client = client
+        self._config = config
 
         self.motie_tekst = discord.ui.TextInput(
             label="Motie (uitgebreide toelichting)",
@@ -78,6 +97,22 @@ class StembureauPostModal2(discord.ui.Modal, title="Nieuwe stemronde (2/2)"):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        majority_info = await fetch_congress_majority(self._client, self._config)
+        if majority_info:
+            total, majority = majority_info
+            stemming_line = (
+                f"*Stemming loopt tot een meerderheid van {majority} stemmen, bij onthoudingen "
+                "verandert de benodigde meerderheid naar verhouding; stem wijzigen of onthouden "
+                f"mag tot sluiting ({total} stemgerechtigden, 50% is {format_half(total)}).*"
+            )
+        else:
+            stemming_line = (
+                "*Stemming loopt tot een meerderheid van de stemgerechtigde congresleden "
+                "(kon het actuele aantal niet live ophalen — check zelf hoeveel congresleden "
+                "er nu zijn), bij onthoudingen verandert de benodigde meerderheid naar "
+                "verhouding; stem wijzigen of onthouden mag tot sluiting.*"
+            )
+
         parts = [
             self._tag_line,
             f"# :ballot_box: Motie *{self._titel}*",
@@ -97,25 +132,16 @@ class StembureauPostModal2(discord.ui.Modal, title="Nieuwe stemronde (2/2)"):
             f":ballot_box_with_check: Akkoord, maar met aanpassingen (zie opmerking in {self._debat_link}).",
             ":white_circle: Onthouden van stemmen",
             f":x: Niet akkoord – {str(self.niet_akkoord_reden).strip()}",
-            "*Stemming loopt tot een meerderheid van 18 stemmen, bij onthoudingen verandert "
-            "de benodigde meerderheid naar verhouding; stem wijzigen of onthouden mag tot "
-            "sluiting (35 stemgerechtigden, 50% is 17,5).*",
-            "Na afronding wordt de stemming gesloten en de stemopties aangepast naar de "
-            "uitgebrachte stemmen",
-            "## Stemming",
-            "(Aantal):white_check_mark: Akkoord",
-            "(Aantal):ballot_box_with_check: Akkoord, maar met aanpassingen",
-            "(Aantal):white_circle: Onthouden van stemmen",
-            "(Aantal):x: Niet akkoord",
-            "Gesloten op datum dd-mm-jj uu:mm",
+            stemming_line,
         ]
         await send_template_chunks(interaction, "\n".join(parts))
 
 
 class StembureauPostModal1(discord.ui.Modal, title="Nieuwe stemronde (1/2)"):
-    def __init__(self, *, config: dict) -> None:
+    def __init__(self, *, config: dict, client) -> None:
         super().__init__()
         self._config = config
+        self._client = client
 
         self.titel = discord.ui.TextInput(
             label="Titel van de motie",
@@ -149,15 +175,25 @@ class StembureauPostModal1(discord.ui.Modal, title="Nieuwe stemronde (1/2)"):
             role_mention(self._config, "vice_president"),
         ]
         tag_line = " ".join(m for m in mentions if m) or "@Congreslid @President @Vice-President"
+        titel = str(self.titel).strip()
+        debat_link = str(self.debat_link).strip()
+        openbaarheid_line = format_openbaarheid(str(self.openbaarheid))
+        onderwerp = str(self.onderwerp).strip()
 
-        await interaction.response.send_modal(
-            StembureauPostModal2(
-                tag_line=tag_line,
-                titel=str(self.titel).strip(),
-                debat_link=str(self.debat_link).strip(),
-                openbaarheid_line=format_openbaarheid(str(self.openbaarheid)),
-                onderwerp=str(self.onderwerp).strip(),
-            )
+        await interaction.response.send_message(
+            content="✅ Eerste deel opgeslagen. Klik hieronder om de motie zelf in te vullen.",
+            view=OpenFormView(
+                lambda: StembureauPostModal2(
+                    tag_line=tag_line,
+                    titel=titel,
+                    debat_link=debat_link,
+                    openbaarheid_line=openbaarheid_line,
+                    onderwerp=onderwerp,
+                    client=self._client,
+                    config=self._config,
+                )
+            ),
+            ephemeral=True,
         )
 
 
@@ -188,7 +224,9 @@ class StembureauPostCog(CommandCogBase, name="stembureaupost"):
             )
             return
 
-        await interaction.response.send_modal(StembureauPostModal1(config=self.config))
+        await interaction.response.send_modal(
+            StembureauPostModal1(config=self.config, client=self._client)
+        )
 
 
 async def setup(bot) -> None:

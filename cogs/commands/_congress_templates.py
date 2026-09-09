@@ -29,11 +29,26 @@ repeats across that family:
   it — showing the description as a preceding message instead sidesteps
   that limit entirely and is guaranteed to render the same on every client
   (TextDisplay-in-modal is a very recent Components V2 addition without
-  guaranteed mobile parity yet).
+  guaranteed mobile parity yet). It's ALSO how multi-modal commands
+  (/motie, /stembureaupost) chain their two modals — a modal opened
+  directly from another modal's on_submit hits a live Discord API 400
+  ("In type: Value must be one of {4, 5, 6, 7, 10, 12}"): discord.py 2.6.4
+  still wraps modal fields in the now-deprecated ActionRow structure, which
+  Discord accepts for a modal opened from a slash command/button/select but
+  rejects for one opened from a modal submission. Button->modal is a
+  different, unaffected code path, so that's the button OpenFormView shows
+  in both cases — description text and modal-chaining are the same problem
+  from Discord's component system's point of view.
+- Live congress-size lookup for /stembureaupost's majority-threshold
+  sentence (fetch_congress_majority) — the Dutch congress's member count
+  changes with monthly elections, so a hardcoded "18 votes needed out of
+  35" goes stale; this pulls the live count from government.getByCountryId
+  instead.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Callable, Optional
 
@@ -103,36 +118,76 @@ def format_openbaarheid(raw: str) -> str:
     return s
 
 
-def make_tag_select() -> discord.ui.Select:
-    """A fresh 0-3 multi-select "who else to tag" component for a modal —
-    the closest thing to checkboxes Discord's modal components actually
-    offer (there's no native checkbox item). Returns a new instance each
-    call since a Select, like a TextInput, is tied to one modal instance.
+def _unwrap_trpc(resp: object) -> object:
+    """Unwrap {"result": {"data": ...}} tRPC response envelope."""
+    try:
+        return resp["result"]["data"]  # type: ignore[index]
+    except (KeyError, TypeError):
+        return resp
+
+
+def format_half(n: int) -> str:
+    half = n / 2
+    if half == int(half):
+        return str(int(half))
+    return f"{half:.1f}".replace(".", ",")
+
+
+async def fetch_congress_majority(client, config: dict) -> Optional[tuple[int, int]]:
+    """Live (total congress members, majority needed) for the Dutch congress.
+
+    The member count changes with monthly congress elections, so this can't
+    be a hardcoded constant — see the module docstring for the incident
+    that prompted pulling it live from government.getByCountryId instead.
+    Majority is a simple >50% threshold (n // 2 + 1); returns None on any
+    failure (no client, no nl_country_id configured, API error, or an
+    unexpected response shape) so callers can fall back to a
+    number-free sentence rather than silently showing a wrong number.
     """
-    return discord.ui.Select(
-        placeholder="Extra taggen (optioneel)",
-        min_values=0,
-        max_values=3,
-        required=False,
-        options=[
-            discord.SelectOption(label="President", value="president"),
-            discord.SelectOption(label="Vice President", value="vicepresident"),
-            discord.SelectOption(label="Ministers (regering)", value="ministers"),
-        ],
-    )
+    if not client:
+        return None
+    nl_country_id = config.get("nl_country_id")
+    if not nl_country_id:
+        return None
+    try:
+        raw = await client.get(
+            "/government.getByCountryId",
+            params={"input": json.dumps({"countryId": nl_country_id})},
+        )
+    except Exception:
+        logger.exception("congress_templates: government.getByCountryId failed")
+        return None
+    data = _unwrap_trpc(raw)
+    if not isinstance(data, dict):
+        return None
+    members = data.get("congressMembers")
+    if not isinstance(members, list) or not members:
+        return None
+    total = len(members)
+    return total, total // 2 + 1
 
 
-def build_tag_line_from_selection(
-    config: dict, selected: list[str], *, base: str = "congreslid"
+def build_tag_line(
+    config: dict, president: bool, vicepresident: bool, ministers: bool, *, base: str = "congreslid"
 ) -> str:
     """congreslid (or *base*) always, plus whichever of president/vice
-    president/ministers were picked in a make_tag_select() selection."""
+    president/ministers were requested.
+
+    Command-option booleans, not a modal Select — a Select field inside a
+    modal was tried first (the closest thing to checkboxes Discord's modal
+    components offer) but is rejected by Discord's API in practice
+    (confirmed live: the same "In type: Value must be one of {4, 5, 6, 7,
+    10, 12}" 400 as the modal-chaining issue, this time on a modal opened
+    from a plain button click with no chaining involved — so the Select
+    field itself is the problem, not how the modal was opened). Falling
+    back to command-option booleans, same as before that attempt.
+    """
     mentions = [role_mention(config, base)]
-    if "president" in selected:
+    if president:
         mentions.append(role_mention(config, "president"))
-    if "vicepresident" in selected:
+    if vicepresident:
         mentions.append(role_mention(config, "vice_president"))
-    if "ministers" in selected:
+    if ministers:
         mentions.append(role_mention(config, "government"))
     return " ".join(m for m in mentions if m) or f"@{base.capitalize()}"
 
