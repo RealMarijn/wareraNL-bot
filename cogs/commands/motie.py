@@ -1,11 +1,13 @@
 """Slash command /motie — genereert een motie-sjabloon voor het congres-/regeringskanaal.
 
-Production guild only (config["guild_id"]) — this has no reason to exist on
-the war guild or nigeria-bot, which don't have a congress. Since the main
-bot process serves both the production guild and the war guild at once (see
-cogs/tasks/war_sync.py), this can't rely on Discord's own guild-scoped
-command sync the way cogs/owner.py's admin-only commands do; it's a normal
-global command gated by a runtime check against interaction.guild.id instead.
+Production guild + war guild (config["guild_id"] and config["war_guild"]["guild_id"])
+— not nigeria-bot, a separate process entirely. The production guild is the
+real target (that's where the actual congress is); the war guild is allowed
+too purely so it's easier to test there. Since the main bot process serves
+both guilds at once (see cogs/tasks/war_sync.py), this can't rely on
+Discord's own guild-scoped command sync the way cogs/owner.py's admin-only
+commands do; it's a normal global command gated by a runtime check against
+interaction.guild.id instead.
 
 Restricted to congress-adjacent roles (congreslid/government/president/
 vice_president — the same set cogs/commands/samenvatting.py already uses
@@ -40,7 +42,7 @@ _NUMBER_EMOJI: dict[int, str] = {
     10: ":keycap_ten:",
 }
 
-_MESSAGE_LIMIT = 1990  # Discord's hard cap is 2000; leave a little headroom
+_MESSAGE_LIMIT = 1970  # Discord's hard cap is 2000; leave room for the ``` code-fence wrapper
 
 _CONGRESS_ROLE_KEYS = ("congreslid", "government", "president", "vice_president")
 
@@ -149,25 +151,27 @@ class MotieModal(discord.ui.Modal, title="Nieuwe motie"):
 
         chunks = _chunk_text("\n".join(parts))
 
+        # Sent inside a ``` code block, in its own message, separate from
+        # this caption — plain (non-code-blocked) markdown looked fine in
+        # the preview, but selecting and copying *rendered* text (a heading,
+        # a mention chip) gives you the display text, not the "# ", "<@&…>"
+        # source underneath, so a normal copy silently threw the formatting
+        # away. Inside a code block nothing gets re-rendered in the first
+        # place, so a plain drag-select-copy already gets the exact raw
+        # source. The recipient just needs to drop the leading/trailing
+        # ``` line(s) after pasting — called out explicitly below since
+        # that's a new manual step this didn't need before.
         try:
-            if len(chunks) == 1:
-                await interaction.response.send_message(
-                    content=(
-                        f"{chunks[0]}\n\n"
-                        "-# Kopieer dit naar het regering-/congreskanaal — "
-                        "pas het gerust nog aan voordat je het post."
-                    ),
-                    ephemeral=True,
-                )
-            else:
-                await interaction.response.send_message(content=chunks[0], ephemeral=True)
-                for chunk in chunks[1:]:
-                    await interaction.followup.send(content=chunk, ephemeral=True)
-                await interaction.followup.send(
-                    "-# Kopieer bovenstaande berichten naar het regering-/congreskanaal — "
-                    "pas ze gerust nog aan voordat je ze post.",
-                    ephemeral=True,
-                )
+            await interaction.response.send_message(
+                content=(
+                    "📋 Kopieer de tekst **binnen** elk ```-codeblok hieronder naar het "
+                    "regering-/congreskanaal (verwijder de ``` -regels zelf) — pas 'm "
+                    "gerust nog aan voordat je 'm post."
+                ),
+                ephemeral=True,
+            )
+            for chunk in chunks:
+                await interaction.followup.send(content=f"```\n{chunk}\n```", ephemeral=True)
         except discord.HTTPException:
             logger.exception("motie: failed to send generated motion text")
 
@@ -186,6 +190,17 @@ class MotieCog(CommandCogBase, name="motie"):
         member_role_ids = {r.id for r in member.roles}
         return bool(member_role_ids & allowed_ids)
 
+    def _allowed_guild_ids(self) -> set[int]:
+        """Production guild always; war guild too, for easier testing."""
+        ids: set[int] = set()
+        gid = self.config.get("guild_id")
+        if gid:
+            ids.add(int(gid))
+        war_gid = (self.config.get("war_guild") or {}).get("guild_id")
+        if war_gid:
+            ids.add(int(war_gid))
+        return ids
+
     @app_commands.command(
         name="motie",
         description="Maak een motie-sjabloon aan voor het congres-/regeringskanaal.",
@@ -202,10 +217,9 @@ class MotieCog(CommandCogBase, name="motie"):
         vicepresident: bool = False,
         ministers: bool = False,
     ) -> None:
-        production_guild_id = int(self.config.get("guild_id") or 0)
-        if not interaction.guild or interaction.guild.id != production_guild_id:
+        if not interaction.guild or interaction.guild.id not in self._allowed_guild_ids():
             await interaction.response.send_message(
-                "❌ Dit commando is alleen beschikbaar op de officiële server.",
+                "❌ Dit commando is hier niet beschikbaar.",
                 ephemeral=True,
             )
             return
