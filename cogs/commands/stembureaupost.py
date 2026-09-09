@@ -6,12 +6,13 @@ cogs/commands/motie.py's docstring. Always tags Congreslid + President +
 Vice-President (unlike /motie/​/debat, that trio isn't optional here — a
 vote concerns the whole congress plus presidential oversight by design).
 
-Short, single-line fields (titel, de link naar het debat, de
-openbaarheidsstatus-code, het onderwerp) are taken as command options
-instead of modal fields — Discord modals cap out at 5 fields, and this
-template needs more than that many variable spots, so the free-text
-paragraphs (motie, stappenplan, de twee stem-toelichtingen) get the modal
-instead. The "## Stemming" tally section is intentionally left as a
+Pure modal, no command options — see cogs/commands/motie.py's docstring for
+why. This template has 8 variable spots (titel, debat-link, openbaarheid,
+onderwerp, motie, stappenplan, and the two stem-toelichtingen), so it's
+split across two chained modals of 4 fields each: the first collects the
+short/single-line fields, its on_submit opens a second modal for the
+free-text paragraphs, and THAT modal's on_submit assembles and sends the
+final text. The "## Stemming" tally section is intentionally left as a
 literal placeholder (counts + closing date aren't known yet at creation
 time) — filled in by hand once the vote closes, same as in the template
 this mirrors.
@@ -36,23 +37,15 @@ from cogs.commands._congress_templates import (
 logger = logging.getLogger("discord_bot")
 
 
-class StembureauPostModal(discord.ui.Modal, title="Nieuwe stemronde"):
+class StembureauPostModal2(discord.ui.Modal, title="Nieuwe stemronde (2/2)"):
     def __init__(
-        self,
-        *,
-        tag_line: str,
-        titel: str,
-        debat_link: str,
-        openbaarheid_line: str,
-        indiener: str,
-        onderwerp: str,
+        self, *, tag_line: str, titel: str, debat_link: str, openbaarheid_line: str, onderwerp: str,
     ) -> None:
         super().__init__()
         self._tag_line = tag_line
         self._titel = titel
         self._debat_link = debat_link
         self._openbaarheid_line = openbaarheid_line
-        self._indiener = indiener
         self._onderwerp = onderwerp
 
         self.motie_tekst = discord.ui.TextInput(
@@ -92,7 +85,7 @@ class StembureauPostModal(discord.ui.Modal, title="Nieuwe stemronde"):
             "## Openbaarheidsstatus",
             self._openbaarheid_line,
             "## Indiener",
-            self._indiener,
+            interaction.user.mention,
             "## Onderwerp",
             self._onderwerp,
             "## Motie",
@@ -119,6 +112,55 @@ class StembureauPostModal(discord.ui.Modal, title="Nieuwe stemronde"):
         await send_template_chunks(interaction, "\n".join(parts))
 
 
+class StembureauPostModal1(discord.ui.Modal, title="Nieuwe stemronde (1/2)"):
+    def __init__(self, *, config: dict) -> None:
+        super().__init__()
+        self._config = config
+
+        self.titel = discord.ui.TextInput(
+            label="Titel van de motie",
+            style=discord.TextStyle.short,
+            max_length=100,
+        )
+        self.debat_link = discord.ui.TextInput(
+            label="Link naar debat / staten-generaal post",
+            style=discord.TextStyle.short,
+            max_length=200,
+            placeholder="Rechtermuisknop op het bericht > Copy Message Link",
+        )
+        self.openbaarheid = discord.ui.TextInput(
+            label="Openbaarheidsstatus",
+            style=discord.TextStyle.short,
+            max_length=100,
+            placeholder='"0" = direct openbaar, "3" = na 3 dagen, of "C: reden" = conditioneel',
+        )
+        self.onderwerp = discord.ui.TextInput(
+            label="Onderwerp (kort)",
+            style=discord.TextStyle.short,
+            max_length=200,
+        )
+        for item in (self.titel, self.debat_link, self.openbaarheid, self.onderwerp):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        mentions = [
+            role_mention(self._config, "congreslid"),
+            role_mention(self._config, "president"),
+            role_mention(self._config, "vice_president"),
+        ]
+        tag_line = " ".join(m for m in mentions if m) or "@Congreslid @President @Vice-President"
+
+        await interaction.response.send_modal(
+            StembureauPostModal2(
+                tag_line=tag_line,
+                titel=str(self.titel).strip(),
+                debat_link=str(self.debat_link).strip(),
+                openbaarheid_line=format_openbaarheid(str(self.openbaarheid)),
+                onderwerp=str(self.onderwerp).strip(),
+            )
+        )
+
+
 class StembureauPostCog(CommandCogBase, name="stembureaupost"):
     """Slash command /stembureaupost — stemronde-sjabloon generator."""
 
@@ -129,20 +171,7 @@ class StembureauPostCog(CommandCogBase, name="stembureaupost"):
         name="stembureaupost",
         description="Start een stemronde voor een motie/petitie in het stemkanaal.",
     )
-    @app_commands.describe(
-        titel="Titel van de motie.",
-        debat_link="Link naar het debat of de #staten-generaal post (rechtermuisknop > Copy Message Link).",
-        openbaarheid='Openbaarheidsstatus: "0" = direct, "3" = na 3 dagen, of "C: reden" = conditioneel.',
-        onderwerp="Kort het onderwerp van deze motie.",
-    )
-    async def stembureaupost(
-        self,
-        interaction: discord.Interaction,
-        titel: str,
-        debat_link: str,
-        openbaarheid: str,
-        onderwerp: str,
-    ) -> None:
+    async def stembureaupost(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or interaction.guild.id not in allowed_guild_ids(self.config):
             await interaction.response.send_message(
                 "❌ Dit commando is hier niet beschikbaar.",
@@ -159,23 +188,7 @@ class StembureauPostCog(CommandCogBase, name="stembureaupost"):
             )
             return
 
-        mentions = [
-            role_mention(self.config, "congreslid"),
-            role_mention(self.config, "president"),
-            role_mention(self.config, "vice_president"),
-        ]
-        tag_line = " ".join(m for m in mentions if m) or "@Congreslid @President @Vice-President"
-
-        await interaction.response.send_modal(
-            StembureauPostModal(
-                tag_line=tag_line,
-                titel=titel,
-                debat_link=debat_link,
-                openbaarheid_line=format_openbaarheid(openbaarheid),
-                indiener=member.mention,
-                onderwerp=onderwerp,
-            )
-        )
+        await interaction.response.send_modal(StembureauPostModal1(config=self.config))
 
 
 async def setup(bot) -> None:

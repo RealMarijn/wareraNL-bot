@@ -2,14 +2,14 @@
 van een afgesloten stemronde.
 
 Same production+war-guild / congress-role gating as /motie — see
-cogs/commands/motie.py's docstring. Every field here is short/single-line
-(a title, three links, a name), so unlike /motie there's no modal at all —
-the command options themselves are enough, and skipping the modal saves the
-user an extra click. The Openbaarheidsstatus line is deliberately left as
-the literal "Kopieer OS uit de motie post" instruction (not regenerated)
-since it needs to exactly match what was already posted in the original
-/stembureaupost, and the "## Stemming" tally is left as a placeholder for
-the same reason as in /stembureaupost — filled in by hand once counted.
+cogs/commands/motie.py's docstring. Pure modal, no command options — see
+that same docstring for why. Every field here is short/single-line, so it
+all fits in one modal (no chaining needed, unlike /motie/​/stembureaupost).
+The Openbaarheidsstatus line is deliberately left as the literal "Kopieer
+OS uit de motie post" instruction (not regenerated) since it needs to
+exactly match what was already posted in the original /stembureaupost, and
+the "## Stemming" tally is left as a placeholder for the same reason as in
+/stembureaupost — filled in by hand once counted.
 """
 
 from __future__ import annotations
@@ -29,6 +29,47 @@ from cogs.commands._congress_templates import (
 logger = logging.getLogger("discord_bot")
 
 
+class StembureauArchiefPostModal(discord.ui.Modal, title="Nieuwe archiefpost"):
+    titel = discord.ui.TextInput(
+        label="Titel van de motie",
+        style=discord.TextStyle.short,
+        max_length=100,
+    )
+    initiatiefnemer = discord.ui.TextInput(
+        label="Initiatiefnemer",
+        style=discord.TextStyle.short,
+        max_length=100,
+        placeholder="Speler/congreslid die de motie/petitie heeft ingediend",
+    )
+    debat_link = discord.ui.TextInput(
+        label="Link naar debat / staten-generaal post",
+        style=discord.TextStyle.short,
+        max_length=200,
+    )
+    stemronde_link = discord.ui.TextInput(
+        label="Link naar de stemronde-post",
+        style=discord.TextStyle.short,
+        max_length=200,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        parts = [
+            f"# :lock_with_ink_pen: Motie *{str(self.titel).strip()}*",
+            "**Openbaarheidsstatus**",
+            "Kopieer OS uit de motie post",
+            f"> **Initiatiefnemer:** {str(self.initiatiefnemer).strip()}",
+            f"> **Debat:** {str(self.debat_link).strip()}",
+            f"> **Stemronde:** {str(self.stemronde_link).strip()}",
+            "## Stemming",
+            "(Aantal):white_check_mark: Akkoord",
+            "(Aantal):ballot_box_with_check: Akkoord, maar met aanpassingen",
+            "(Aantal):white_circle: Onthouden van stemmen",
+            "(Aantal):x: Niet akkoord",
+            "Gesloten op datum dd-mm-jjjj uu:mm",
+        ]
+        await send_template_chunks(interaction, "\n".join(parts))
+
+
 class StembureauArchiefPostCog(CommandCogBase, name="stembureauarchiefpost"):
     """Slash command /stembureauarchiefpost — archiefpost-sjabloon generator."""
 
@@ -39,20 +80,7 @@ class StembureauArchiefPostCog(CommandCogBase, name="stembureauarchiefpost"):
         name="stembureauarchiefpost",
         description="Maak de archief-samenvatting van een afgesloten stemronde.",
     )
-    @app_commands.describe(
-        titel="Titel van de motie.",
-        initiatiefnemer="Speler/congreslid die de motie/petitie heeft ingediend.",
-        debat_link="Discord debat link of #staten-generaal post link.",
-        stemronde_link="Discord link naar de stemronde-post.",
-    )
-    async def stembureauarchiefpost(
-        self,
-        interaction: discord.Interaction,
-        titel: str,
-        initiatiefnemer: str,
-        debat_link: str,
-        stemronde_link: str,
-    ) -> None:
+    async def stembureauarchiefpost(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or interaction.guild.id not in allowed_guild_ids(self.config):
             await interaction.response.send_message(
                 "❌ Dit commando is hier niet beschikbaar.",
@@ -69,21 +97,7 @@ class StembureauArchiefPostCog(CommandCogBase, name="stembureauarchiefpost"):
             )
             return
 
-        parts = [
-            f"# :lock_with_ink_pen: Motie *{titel}*",
-            "**Openbaarheidsstatus**",
-            "Kopieer OS uit de motie post",
-            f"> **Initiatiefnemer:** {initiatiefnemer}",
-            f"> **Debat:** {debat_link}",
-            f"> **Stemronde:** {stemronde_link}",
-            "## Stemming",
-            "(Aantal):white_check_mark: Akkoord",
-            "(Aantal):ballot_box_with_check: Akkoord, maar met aanpassingen",
-            "(Aantal):white_circle: Onthouden van stemmen",
-            "(Aantal):x: Niet akkoord",
-            "Gesloten op datum dd-mm-jjjj uu:mm",
-        ]
-        await send_template_chunks(interaction, "\n".join(parts))
+        await interaction.response.send_modal(StembureauArchiefPostModal())
 
 
 async def setup(bot) -> None:

@@ -14,14 +14,18 @@ vice_president — the same set cogs/commands/samenvatting.py already uses
 for "samenvatting_allowed"-equivalent access) or server admins, matching
 "congress members" from the feature request.
 
-Opens a modal (Discord's UI can't mix a slash command's own options with a
-modal beyond simple booleans — the who-to-tag choice is taken as command
-options *before* the modal opens, since interaction.response.send_modal()
-must be the very first response) collecting the free-text parts of the
-template, then replies with the assembled motion text as one or more
-ephemeral messages (Discord's 2000-char message cap can be smaller than the
-combined template) for the user to copy, tweak, and post themselves — the
-bot never posts a motion into a channel on anyone's behalf.
+Pure modal, no command options — a Discord modal can't be pre-filled from
+answers given elsewhere, so mixing slash-command options with a modal (the
+original design) made it look like whatever was typed into the options got
+thrown away the moment the modal opened. All 6 fields are TextInputs
+instead, split across two chained modals since a single modal caps out at 5
+(collect the short fields first, then the free-text "who else to tag" field
+opens a second modal for the two paragraph fields) — a modal submission's
+interaction can itself open another modal as its first response, same as
+any other interaction. Replies with the assembled motion text as one or
+more ephemeral, code-fenced messages (see _congress_templates.py) for the
+user to copy, tweak, and post themselves — the bot never posts a motion
+into a channel on anyone's behalf.
 """
 
 from __future__ import annotations
@@ -34,20 +38,63 @@ from discord import app_commands
 from cogs.commands._base import CommandCogBase
 from cogs.commands._congress_templates import (
     allowed_guild_ids,
+    build_tag_line,
     format_openbaarheid,
     is_congress_member,
-    role_mention,
     send_template_chunks,
 )
 
 logger = logging.getLogger("discord_bot")
 
 
-class MotieModal(discord.ui.Modal, title="Nieuwe motie"):
-    def __init__(self, *, tag_line: str, indiener: str) -> None:
+class MotieModal2(discord.ui.Modal, title="Nieuwe motie (2/2)"):
+    def __init__(self, *, tag_line: str, titel: str, openbaarheid_line: str, onderwerp: str) -> None:
         super().__init__()
         self._tag_line = tag_line
-        self._indiener = indiener
+        self._titel = titel
+        self._openbaarheid_line = openbaarheid_line
+        self._onderwerp = onderwerp
+
+        self.motie_tekst = discord.ui.TextInput(
+            label="Motie (uitgebreide toelichting)",
+            style=discord.TextStyle.paragraph,
+            max_length=4000,
+        )
+        self.extra = discord.ui.TextInput(
+            label="Stappenplan / Motivatie (optioneel)",
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+            required=False,
+            placeholder="Bijv. een genummerd stappenplan en/of de motivatie voor dit voorstel",
+        )
+        for item in (self.motie_tekst, self.extra):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        parts = [
+            self._tag_line,
+            f"# Motie *{self._titel}*",
+            "## Openbaarheidsstatus",
+            self._openbaarheid_line,
+            "## Indiener",
+            interaction.user.mention,
+            "## Onderwerp",
+            self._onderwerp,
+            "## Motie",
+            str(self.motie_tekst).strip(),
+        ]
+        extra_value = str(self.extra).strip()
+        if extra_value:
+            parts.append("## Stappenplan / Motivatie (optioneel)")
+            parts.append(extra_value)
+
+        await send_template_chunks(interaction, "\n".join(parts))
+
+
+class MotieModal1(discord.ui.Modal, title="Nieuwe motie (1/2)"):
+    def __init__(self, *, config: dict) -> None:
+        super().__init__()
+        self._config = config
 
         self.titel = discord.ui.TextInput(
             label="Titel van de motie",
@@ -66,43 +113,26 @@ class MotieModal(discord.ui.Modal, title="Nieuwe motie"):
             style=discord.TextStyle.short,
             max_length=200,
         )
-        self.motie_tekst = discord.ui.TextInput(
-            label="Motie (uitgebreide toelichting)",
-            style=discord.TextStyle.paragraph,
-            max_length=4000,
-        )
-        self.extra = discord.ui.TextInput(
-            label="Stappenplan / Motivatie (optioneel)",
-            style=discord.TextStyle.paragraph,
-            max_length=1000,
+        self.tag_extra = discord.ui.TextInput(
+            label="Extra taggen (optioneel)",
+            style=discord.TextStyle.short,
+            max_length=100,
             required=False,
-            placeholder="Bijv. een genummerd stappenplan en/of de motivatie voor dit voorstel",
+            placeholder="Bijv. president, vicepresident, ministers",
         )
-
-        for item in (
-            self.titel, self.openbaarheid, self.onderwerp, self.motie_tekst, self.extra,
-        ):
+        for item in (self.titel, self.openbaarheid, self.onderwerp, self.tag_extra):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        parts = [
-            self._tag_line,
-            f"# Motie *{self.titel}*",
-            "## Openbaarheidsstatus",
-            format_openbaarheid(str(self.openbaarheid)),
-            "## Indiener",
-            self._indiener,
-            "## Onderwerp",
-            str(self.onderwerp).strip(),
-            "## Motie",
-            str(self.motie_tekst).strip(),
-        ]
-        extra_value = str(self.extra).strip()
-        if extra_value:
-            parts.append("## Stappenplan / Motivatie (optioneel)")
-            parts.append(extra_value)
-
-        await send_template_chunks(interaction, "\n".join(parts))
+        tag_line = build_tag_line(self._config, str(self.tag_extra))
+        await interaction.response.send_modal(
+            MotieModal2(
+                tag_line=tag_line,
+                titel=str(self.titel).strip(),
+                openbaarheid_line=format_openbaarheid(str(self.openbaarheid)),
+                onderwerp=str(self.onderwerp).strip(),
+            )
+        )
 
 
 class MotieCog(CommandCogBase, name="motie"):
@@ -115,18 +145,7 @@ class MotieCog(CommandCogBase, name="motie"):
         name="motie",
         description="Maak een motie-sjabloon aan voor het congres-/regeringskanaal.",
     )
-    @app_commands.describe(
-        president="Tag ook de President.",
-        vicepresident="Tag ook de Vice-President.",
-        ministers="Tag ook de Regering (ministers).",
-    )
-    async def motie(
-        self,
-        interaction: discord.Interaction,
-        president: bool = False,
-        vicepresident: bool = False,
-        ministers: bool = False,
-    ) -> None:
+    async def motie(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or interaction.guild.id not in allowed_guild_ids(self.config):
             await interaction.response.send_message(
                 "❌ Dit commando is hier niet beschikbaar.",
@@ -143,18 +162,7 @@ class MotieCog(CommandCogBase, name="motie"):
             )
             return
 
-        mentions = [role_mention(self.config, "congreslid")]
-        if president:
-            mentions.append(role_mention(self.config, "president"))
-        if vicepresident:
-            mentions.append(role_mention(self.config, "vice_president"))
-        if ministers:
-            mentions.append(role_mention(self.config, "government"))
-        tag_line = " ".join(m for m in mentions if m) or "@Congreslid"
-
-        await interaction.response.send_modal(
-            MotieModal(tag_line=tag_line, indiener=member.mention)
-        )
+        await interaction.response.send_modal(MotieModal1(config=self.config))
 
 
 async def setup(bot) -> None:
