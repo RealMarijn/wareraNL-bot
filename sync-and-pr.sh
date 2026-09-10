@@ -46,8 +46,14 @@ echo "==> Fetching origin and upstream..."
 git fetch origin
 git fetch upstream
 
-echo "==> Fast-forwarding local $BASE_BRANCH to origin/$BASE_BRANCH..."
-git merge --ff-only "origin/$BASE_BRANCH"
+echo "==> Syncing local $BASE_BRANCH with origin/$BASE_BRANCH..."
+# Fast-forwards when possible; falls back to a real merge when local has
+# commits origin doesn't have yet (e.g. committed locally but not pushed).
+if ! git merge --no-edit "origin/$BASE_BRANCH"; then
+    echo "❌ Merge conflict with origin/$BASE_BRANCH — resolve manually (git status" >&2
+    echo "   shows the conflicted files), commit, then re-run this script." >&2
+    exit 1
+fi
 
 echo "==> Merging upstream/$BASE_BRANCH..."
 if ! git merge --no-edit "upstream/$BASE_BRANCH"; then
