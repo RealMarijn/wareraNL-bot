@@ -134,14 +134,18 @@ def format_half(n: int) -> str:
 
 
 async def fetch_congress_majority(client, config: dict) -> Optional[tuple[int, int]]:
-    """Live (total congress members, majority needed) for the Dutch congress.
+    """Live (total eligible voters, majority needed) for the Dutch congress.
 
     The member count changes with monthly congress elections, so this can't
     be a hardcoded constant — see the module docstring for the incident
     that prompted pulling it live from government.getByCountryId instead.
-    Majority is a simple >50% threshold (n // 2 + 1); returns None on any
-    failure (no client, no nl_country_id configured, API error, or an
-    unexpected response shape) so callers can fall back to a
+    Total is len(congressMembers) + 2 — President and Vice President can
+    also vote and aren't necessarily congress members themselves, unlike
+    the ministers (who, per the NicolasKing example this session, are also
+    tagged as a regular congressMemberOf and so are already counted in that
+    list). Majority is a simple >50% threshold (n // 2 + 1); returns None
+    on any failure (no client, no nl_country_id configured, API error, or
+    an unexpected response shape) so callers can fall back to a
     number-free sentence rather than silently showing a wrong number.
     """
     if not client:
@@ -163,7 +167,7 @@ async def fetch_congress_majority(client, config: dict) -> Optional[tuple[int, i
     members = data.get("congressMembers")
     if not isinstance(members, list) or not members:
         return None
-    total = len(members)
+    total = len(members) + 2  # + President + Vice President
     return total, total // 2 + 1
 
 
