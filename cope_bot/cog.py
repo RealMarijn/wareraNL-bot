@@ -81,9 +81,9 @@ _WARERA_URL_RE = re.compile(
 _GOVERNMENT_ROLES: list[tuple[str, str, str]] = [
     ("presidentOf", "★", "President"),
     ("vicePresidentOf", "☆", "Vice President"),
-    ("minOfDefenseOf", "🛡️", "Minister of Defense"),
-    ("minOfEconomyOf", "📈", "Minister of Economy"),
-    ("minOfForeignAffairsOf", "🌐", "Minister of Foreign Affairs"),
+    ("minOfDefenseOf", "⚔", "Minister of Defense"),
+    ("minOfEconomyOf", "€k", "Minister of Economy"),
+    ("minOfForeignAffairsOf", "✈", "Minister of Foreign Affairs"),
 ]
 
 # Known country code (lowercase, as returned by country.getCountryById's
@@ -420,6 +420,16 @@ async def _create_ticket(interaction: discord.Interaction, warera_url: str) -> N
         overwrites[admin_role] = discord.PermissionOverwrite(
             view_channel=True, send_messages=True, manage_channels=True
         )
+    # The bot itself needs an explicit grant here too — @everyone is denied
+    # view_channel above, and since COPErator was deliberately invited
+    # without Administrator (least-privilege), that deny applies to the bot
+    # exactly like anyone else. Without this, every channel.send() below
+    # fails with a silent 403 the instant the channel is created.
+    if guild.me:
+        overwrites[guild.me] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, manage_channels=True,
+            read_message_history=True, embed_links=True, attach_files=True,
+        )
 
     # Store the URL in the topic so Approve can read it without staff retyping it.
     topic = f"user_id={user.id}|warera_url={warera_url}"
@@ -610,12 +620,23 @@ class VerificationCog(commands.Cog, name="cope_verification"):
 
     @tasks.loop(hours=6)
     async def nickname_role_sync(self) -> None:
+        await self._run_nickname_sync(approver="automatic sync")
+
+    @nickname_role_sync.before_loop
+    async def _before_sync(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _run_nickname_sync(self, *, approver: str) -> tuple[int, int]:
+        """Re-check every linked member's WarEra profile and update their
+        nickname/country role. Returns (processed, total linked) — shared by
+        the 6-hourly loop and /syncnicknames so there's one implementation.
+        """
         guild = self.bot.get_guild(GUILD_ID)
         if not guild:
-            return
+            return 0, 0
         links = await get_all_links(self._db)
         if not links:
-            return
+            return 0, 0
 
         processed = 0
         async with aiohttp.ClientSession() as sess:
@@ -628,16 +649,27 @@ class VerificationCog(commands.Cog, name="cope_verification"):
                 try:
                     await _apply_verification(
                         guild, member, warera_id, self._db,
-                        approver="automatic sync", session=sess,
+                        approver=approver, session=sess,
                     )
                     processed += 1
                 except Exception:
                     logger.exception("nickname_role_sync: failed for %s", discord_id)
         logger.info("nickname_role_sync: processed %d/%d linked member(s)", processed, len(links))
+        return processed, len(links)
 
-    @nickname_role_sync.before_loop
-    async def _before_sync(self) -> None:
-        await self.bot.wait_until_ready()
+    @app_commands.command(
+        name="syncnicknames",
+        description="Refresh nicknames and country roles for all verified members right now.",
+    )
+    @_admin_check()
+    async def sync_nicknames(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        processed, total = await self._run_nickname_sync(
+            approver=f"manual sync by {interaction.user}"
+        )
+        await interaction.followup.send(
+            f"✅ Synced {processed}/{total} verified member(s).", ephemeral=True
+        )
 
     # ── /postverify ────────────────────────────────────────────────────────────
 
