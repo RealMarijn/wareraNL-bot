@@ -235,20 +235,27 @@ async def send_template_chunks(interaction: discord.Interaction, body: str) -> N
     but selecting and copying *rendered* text (a heading, a mention chip)
     gives you the display text, not the "# ", "<@&…>" source underneath, so
     a normal copy would silently throw the formatting away. Inside a code
-    block nothing gets re-rendered in the first place, so a plain
-    drag-select-copy (desktop) already gets the exact raw source; mobile
-    has no hover-copy icon, so the equivalent there is Discord's own
-    long-press -> "Tekst kopiëren" ("Copy Text") action, which works the
-    same way on code-block content. Either way the recipient needs to drop
-    the leading/trailing ``` line(s) after pasting.
+    block nothing gets re-rendered in the first place, so it copies clean.
+
+    Desktop and mobile differ in what exactly ends up on the clipboard,
+    which is why the caption below only tells MOBILE users to strip the
+    ``` lines: desktop's dedicated hover copy-icon copies only the code
+    block's inner content (no backticks in the result — confirmed nothing
+    to remove there), while mobile has no such icon and instead uses
+    Discord's generic long-press -> "Tekst kopiëren" ("Copy Text"), which
+    copies the ENTIRE message including the ``` fence lines above and
+    below. Telling desktop users to "remove the ``` lines" was confusing
+    (the earlier caption said this unconditionally) since they'd never see
+    any to remove in the first place.
     """
     caption = (
         "📋 Kopieer de tekst **binnen** elk ```-codeblok hieronder naar het "
-        "regering-/congreskanaal (verwijder de ``` -regels zelf) — pas 'm "
-        "gerust nog aan voordat je 'm post.\n"
-        "• **Desktop:** hover over het blok, klik het kopieer-icoontje rechtsboven.\n"
-        "• **Mobiel:** er is geen kopieerknopje zichtbaar — hou het bericht "
-        "ingedrukt en kies **Tekst kopiëren** in het menu dat verschijnt."
+        "regering-/congreskanaal — pas 'm gerust nog aan voordat je 'm post.\n"
+        "• **Desktop:** hover over het blok en klik het kopieer-icoontje rechtsboven "
+        "— dat kopieert alleen de tekst zelf.\n"
+        "• **Mobiel:** er is geen kopieerknopje zichtbaar — hou het bericht ingedrukt "
+        "en kies **Tekst kopiëren**. Dat kopieert het hele bericht inclusief de "
+        "``` -regels boven- en onderaan — verwijder die twee regels na het plakken."
     )
     chunks = chunk_text(body)
     try:
