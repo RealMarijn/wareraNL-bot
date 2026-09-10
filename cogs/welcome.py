@@ -518,13 +518,22 @@ async def create_verification_channel(
     if category:
         bot_permissions = category.permissions_for(guild.me)
         if not bot_permissions.manage_channels:
-            await interaction.followup.send(
-                f"Ik heb geen toestemming om kanalen aan te maken"
-                f" in de **{category.name}** categorie.\n\n"
-                "**Oplossing:** Ga naar kanaalinstellingen > Rechten > "
-                "Voeg de botrol toe met 'Kanalen beheren' ingeschakeld.",
-                ephemeral=True,
-            )
+            if request_type == "embassy":
+                await interaction.followup.send(
+                    f"I don't have permission to create channels"
+                    f" in the **{category.name}** category.\n\n"
+                    "**Solution:** Go to channel settings > Permissions > "
+                    "Add the bot role with 'Manage Channels' enabled.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"Ik heb geen toestemming om kanalen aan te maken"
+                    f" in de **{category.name}** categorie.\n\n"
+                    "**Oplossing:** Ga naar kanaalinstellingen > Rechten > "
+                    "Voeg de botrol toe met 'Kanalen beheren' ingeschakeld.",
+                    ephemeral=True,
+                )
             return
 
     # Create the ticket channel
@@ -539,17 +548,30 @@ async def create_verification_channel(
             ),
         )
     except discord.Forbidden as e:
-        error_msg = (
-            "Ik heb geen toestemming om kanalen aan te maken.\n\n"
-            "**Mogelijke oplossingen:**\n"
-            "• Zorg dat de bot 'Kanalen beheren' toestemming heeft op de hele server\n"
-        )
-        if category:
-            error_msg += (
-                f"• Voeg de bot toe aan de **{category.name}** categorie "
-                "met 'Kanalen beheren' toestemming\n"
+        if request_type == "embassy":
+            error_msg = (
+                "I don't have permission to create channels.\n\n"
+                "**Possible solutions:**\n"
+                "• Make sure the bot has 'Manage Channels' permission server-wide\n"
             )
-        error_msg += f"\n**Fout:** {e}"
+            if category:
+                error_msg += (
+                    f"• Add the bot to the **{category.name}** category "
+                    "with 'Manage Channels' permission\n"
+                )
+            error_msg += f"\n**Error:** {e}"
+        else:
+            error_msg = (
+                "Ik heb geen toestemming om kanalen aan te maken.\n\n"
+                "**Mogelijke oplossingen:**\n"
+                "• Zorg dat de bot 'Kanalen beheren' toestemming heeft op de hele server\n"
+            )
+            if category:
+                error_msg += (
+                    f"• Voeg de bot toe aan de **{category.name}** categorie "
+                    "met 'Kanalen beheren' toestemming\n"
+                )
+            error_msg += f"\n**Fout:** {e}"
         await interaction.followup.send(error_msg, ephemeral=True)
         return
 
@@ -575,22 +597,46 @@ async def create_verification_channel(
                 role_mentions.append(role.mention)
 
     # Create the ticket embed with request details
-    embed = discord.Embed(
-        title=f"📋 {request_title}",
-        description=(
-            f"**Gebruiker:** {user.mention}\n"
-            f"**Type:** {request_type.title()}\n"
-            f"**Ticket ID:** #{ticket_id}"
-        ),
-        color=embed_color,
-        timestamp=datetime.datetime.now(datetime.UTC),
-    )
+    # Embassy tickets are staffed by (potentially non-Dutch-speaking) foreign
+    # diplomats, so keep this one in English; the other request types keep
+    # their existing Dutch labels.
+    if request_type == "embassy":
+        embed = discord.Embed(
+            title=f"📋 {request_title}",
+            description=(
+                f"**User:** {user.mention}\n"
+                f"**Type:** {request_type.title()}\n"
+                f"**Ticket ID:** #{ticket_id}"
+            ),
+            color=embed_color,
+            timestamp=datetime.datetime.now(datetime.UTC),
+        )
+    else:
+        embed = discord.Embed(
+            title=f"📋 {request_title}",
+            description=(
+                f"**Gebruiker:** {user.mention}\n"
+                f"**Type:** {request_type.title()}\n"
+                f"**Ticket ID:** #{ticket_id}"
+            ),
+            color=embed_color,
+            timestamp=datetime.datetime.now(datetime.UTC),
+        )
     embed.set_thumbnail(url=user.display_avatar.url)
-    if request_type != "admin_contact":
+    if request_type == "embassy":
+        embed.add_field(
+            name="Instructions for Moderators",
+            value=(
+                "Use `/embassyapprove` to approve this request\n"
+                "Use `/deny` to reject this request"
+            ),
+            inline=False,
+        )
+    elif request_type != "admin_contact":
         embed.add_field(
             name="Instructies voor Moderators",
             value=(
-                f"Gebruik `{'/approve' if not request_type=='embassy' else '/embassyapprove'}` om dit verzoek goed te keuren\n"
+                "Gebruik `/approve` om dit verzoek goed te keuren\n"
                 "Gebruik `/deny` om dit verzoek af te wijzen"
             ),
             inline=False,
@@ -603,7 +649,7 @@ async def create_verification_channel(
 
     if questionnaire_answers:
         questionnaire_embed = discord.Embed(
-            title="🧾 Ingevulde Vragenlijst",
+            title="🧾 Submitted Questionnaire" if request_type == "embassy" else "🧾 Ingevulde Vragenlijst",
             color=embed_color,
             timestamp=datetime.datetime.now(datetime.UTC),
         )
@@ -1693,7 +1739,7 @@ class Welcome(commands.Cog, name="welcome"):
             description=f"Your {request_type} verification request has been denied.",
             color=discord.Color.red(),
         )
-        user_embed.set_footer(text="Dit kanaal zal worden verwijderd over 8 uur.")
+        user_embed.set_footer(text="This channel will be deleted in 8 hours.")
 
         if member:
             await channel.send(content=member.mention, embed=user_embed)
@@ -1773,11 +1819,11 @@ class Welcome(commands.Cog, name="welcome"):
         )
 
     @app_commands.command(
-        name="embassyapprove", description="Keur een ambassadeverzoek goed"
+        name="embassyapprove", description="Approve an embassy request"
     )
     @app_commands.describe(
-        country="Land van het ambassadeverzoek",
-        in_game_id="In-game ID of profiel-URL (https://app.warera.io/user/{id})",
+        country="Country of the embassy request",
+        in_game_id="In-game ID or profile URL (https://app.warera.io/user/{id})",
     )
     @app_commands.autocomplete(country=country_autocomplete)
     @has_privileged_role()
@@ -1877,7 +1923,7 @@ class Welcome(commands.Cog, name="welcome"):
 
             if not user_id:
                 await interaction.followup.send(
-                    "Kon de gebruiker voor dit verzoek niet vinden. Controleer dit handmatig.",
+                    "Could not find the user for this request. Please check manually.",
                     ephemeral=True,
                 )
                 return
@@ -1885,7 +1931,7 @@ class Welcome(commands.Cog, name="welcome"):
             member = interaction.guild.get_member(user_id)
             if not member:
                 await interaction.followup.send(
-                    "De gebruiker is niet meer op de server.", ephemeral=True
+                    "The user is no longer on the server.", ephemeral=True
                 )
                 return
 
@@ -2027,23 +2073,23 @@ class Welcome(commands.Cog, name="welcome"):
                         embassy_channel = channel
                     except discord.Forbidden as e:
                         error_msg = (
-                            "Ik heb geen toestemming om kanalen aan te maken.\n\n"
-                            "**Mogelijke oplossingen:**\n"
-                            "• Zorg dat de bot 'Kanalen beheren' toestemming heeft "
-                            "op de hele server\n"
+                            "I don't have permission to create channels.\n\n"
+                            "**Possible solutions:**\n"
+                            "• Make sure the bot has 'Manage Channels' permission "
+                            "server-wide\n"
                         )
                         if category:
                             error_msg += (
-                                f"• Voeg de bot toe aan de **{category.name}** categorie "
-                                "met 'Kanalen beheren' toestemming\n"
+                                f"• Add the bot to the **{category.name}** category "
+                                "with 'Manage Channels' permission\n"
                             )
-                        error_msg += f"\n**Fout:** {e}"
+                        error_msg += f"\n**Error:** {e}"
                         await interaction.followup.send(error_msg, ephemeral=True)
                         return
                     except discord.HTTPException as e:
                         await interaction.followup.send(
-                            "Kon ambassadekanaal niet aanmaken. Controleer of de ingestelde categorieen niet vol zijn en of de bot voldoende rechten heeft.\n"
-                            f"**Fout:** {e}",
+                            "Could not create the embassy channel. Check that the configured categories aren't full and that the bot has sufficient permissions.\n"
+                            f"**Error:** {e}",
                             ephemeral=True,
                         )
                         return
@@ -2098,6 +2144,21 @@ class Welcome(commands.Cog, name="welcome"):
                 embed=confirmation_embed,
             )
 
+            # Also post a public confirmation in the TICKET channel itself
+            # (embassy-<id>-<user> — this command runs in it, "channel" is
+            # it). Without this, approval was only ever visible to the
+            # moderator (ephemeral response_text below) and in the shared
+            # country embassy channel — never in the ticket that's about to
+            # close, so the applicant had no visible sign their request had
+            # actually been approved before the channel disappeared.
+            approved_embed = discord.Embed(
+                title="✅ Embassy Request Approved",
+                description=f"You now have access to {embassy_channel.mention}.",
+                color=discord.Color.green(),
+            )
+            approved_embed.set_footer(text="This ticket channel will be deleted in 8 hours.")
+            await channel.send(content=member.mention, embed=approved_embed)
+
             response_text = (
                 f"Successfully approved embassy request for {member.mention} and assigned role {embassy_role.mention}. "
                 f"Access to the embassy channel {embassy_channel.mention} has been granted."
@@ -2110,7 +2171,7 @@ class Welcome(commands.Cog, name="welcome"):
             # 8-hour deletion was actually scheduled. The confirmation embed is
             # deliberately not used for this — it goes to the embassy channel,
             # which is not the channel being deleted.
-            response_text += "\nDit ticketkanaal wordt over 8 uur verwijderd."
+            response_text += "\nThis ticket channel will be deleted in 8 hours."
             await reply(response_text)
 
             # Log to the government log channel
@@ -2120,15 +2181,15 @@ class Welcome(commands.Cog, name="welcome"):
                 if log_channel:
                     try:
                         log_embed = discord.Embed(
-                            title="✅ Ambassadeverzoek Goedgekeurd",
-                            description=f"**Gebruiker:** {member.mention} ({member.name})\n"
-                            f"**Land:** {country.title()}\n",
+                            title="✅ Embassy Request Approved",
+                            description=f"**User:** {member.mention} ({member.name})\n"
+                            f"**Country:** {country.title()}\n",
                             color=discord.Color.green(),
                             timestamp=datetime.datetime.now(datetime.UTC),
                         )
                         log_embed.set_thumbnail(url=member.display_avatar.url)
                         log_embed.set_footer(
-                            text=f"Goedgekeurd door {interaction.user.name}",
+                            text=f"Approved by {interaction.user.name}",
                             icon_url=interaction.user.display_avatar.url,
                         )
                         await log_channel.send(embed=log_embed)
