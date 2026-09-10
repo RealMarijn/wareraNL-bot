@@ -4,19 +4,25 @@
 # server actually reads) and fill in real IDs. Edits take effect immediately —
 # the file is re-read on every login/refresh, no server restart needed.
 #
-# Two kinds of line, either can have an optional trailing "# name" comment.
-# Blank lines and full-line comments are ignored.
+# Three kinds of line, any of which can have an optional trailing "# name"
+# comment. Blank lines and full-line comments are ignored.
 #
 #   <user id>          grants that one Discord account access
 #   role:<role id>     grants anyone holding that role in the configured
 #                       Discord server (EXTENSION_GUILD_ID, or ADMIN_GUILD_ID
 #                       if that's unset) access
+#   guild:<guild id>    grants anyone who is simply a MEMBER of a SECOND,
+#                       independent Discord server (EXTENSION_EXTRA_GUILD_ID)
+#                       — no specific role needed — access. Use this to
+#                       whitelist an entire community server wholesale,
+#                       alongside role:-based entries for a different server.
 #
-# How to find a Discord user/role ID: Discord settings -> Advanced -> turn on
-# Developer Mode, then right-click a name (Copy User ID) or a role in
-# Server Settings -> Roles (Copy Role ID).
+# How to find a Discord user/role/server ID: Discord settings -> Advanced ->
+# turn on Developer Mode, then right-click a name (Copy User ID), a role in
+# Server Settings -> Roles (Copy Role ID), or the server icon (Copy Server ID).
 
 111222333444555666  # Marijn
 222333444555666777  # SomeoneElse
 
 role:333444555666777888  # MU Leadership
+guild:444555666777888999  # Community server (all members)
