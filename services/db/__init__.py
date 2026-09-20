@@ -14,12 +14,13 @@ Mixin                Tables
 :mod:`.resistance`   ``resistance_state``
 :mod:`.region_status`   ``region_upgrade_status``, ``region_resistance``
 :mod:`.country_proxy`   ``country_proxy_status``
+:mod:`.intel_feed`      ``intel_feed_items``
 :mod:`.mus_registry` ``known_mus``
 :mod:`.battle_drops`    ``battle_drops``
 :mod:`.battle_rankings` ``battle_hits``, ``processed_battles``
 :mod:`.article_tips`    ``article_tips``
 :mod:`.company_bonus`   ``company_bonus_watchers``, ``company_bonus_alerts``
-:mod:`.company_census`  ``company_census``, ``company_census_runs``
+:mod:`.company_census`  ``company_census``, ``company_census_runs``, ``region_snapshots``
 :mod:`.company_tax`     ``company_tax_revenue``, ``worker_company_map``
 :mod:`.damage_projection` ``alliance_countries``, ``citizen_combat_state``
 :mod:`.gems`            ``event_gems``
@@ -66,6 +67,7 @@ from .mus_registry import MusRegistryMixin
 from .pill_reminders import PillRemindersMixin
 from .pill_tracking import PillTrackingMixin
 from .production import ProductionMixin
+from .intel_feed import IntelFeedMixin
 from .region_status import RegionStatusMixin
 from .resistance import ResistanceMixin
 from .state import StateMixin
@@ -94,6 +96,7 @@ class Database(
     LuckMixin,
     ResistanceMixin,
     RegionStatusMixin,
+    IntelFeedMixin,
     CountryProxyMixin,
     MusRegistryMixin,
     DivisionOverridesMixin,

@@ -53,3 +53,45 @@ fi
 sudo systemctl restart wareranl-bot
 sudo systemctl restart wareranl-web
 sudo systemctl --no-pager --full status wareranl-bot
+
+# ── Data fetcher (all-countries citizen/company/region sweep) ──────────────
+# The main bot only ever refreshes NL itself, every hour (see
+# cogs/tasks/citizens.py's citizen_refresh — enable_all_countries_sweep is
+# false here, on purpose, so the bot's own task loop doesn't race this
+# process over database/external.db). Every OTHER country's cached data
+# (/paraatheid land:<land>, /fabrieken, /tax-breakdown, etc.) depends
+# entirely on this separate process — without it running, a country's data
+# just freezes at whatever it last was. This was never provisioned on this
+# server, which is why /paraatheid land:Germany was stuck showing July data
+# while NL stayed fresh.
+#
+# Deliberately placed AFTER the bot/web restart above, not before: this repo
+# has no SSH access to this server outside of this script, so the unit file
+# and its enable/restart have to be provisioned here too, on every deploy.
+# If this server's passwordless sudo doesn't cover writing unit files /
+# daemon-reload / enable (only "systemctl restart/status" on the two
+# services above is proven to work), this block fails loudly on its own —
+# but the bot/web restart above has already completed by then either way.
+echo "── Provisioning wareranl-datafetcher service ──"
+sudo tee /etc/systemd/system/wareranl-datafetcher.service > /dev/null <<UNIT
+[Unit]
+Description=WarEra NL - all-countries data fetcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/warera/live/wareraNL-bot
+Environment=RW_API_KEYS_PATH=_api_keys_datafetcher.json
+ExecStart=/home/warera/live/wareraNL-bot/.venv/bin/python -m services.full_fetcher
+Restart=always
+RestartSec=15
+User=$(whoami)
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable wareranl-datafetcher
+sudo systemctl restart wareranl-datafetcher
+sudo systemctl --no-pager --full status wareranl-datafetcher

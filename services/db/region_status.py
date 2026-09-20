@@ -19,11 +19,11 @@ class RegionStatusMixin:
     async def save_region_upgrade_status(
         self,
         upgrade_type: str,
-        rows: Iterable[tuple[str, str, int, Optional[str]]],
+        rows: Iterable[tuple[str, str, int, Optional[str], Optional[str], Optional[float]]],
         updated_at: str,
     ) -> int:
         """Replace all rows for *upgrade_type* ('base' or 'bunker') with *rows*
-        = (region_id, status, level, will_be_active_at).
+        = (region_id, status, level, will_be_active_at, last_upgrade_at, cooldown_hours).
 
         Regions are a small, fixed set that never appear/disappear mid-sweep,
         so — like alliance_countries — this deletes and reinserts whole rather
@@ -31,8 +31,9 @@ class RegionStatusMixin:
         returning doesn't leave a stale row behind forever.
         """
         payload = [
-            (region_id, upgrade_type, status, int(level), will_be_active_at, updated_at)
-            for region_id, status, level, will_be_active_at in rows
+            (region_id, upgrade_type, status, int(level), will_be_active_at, last_upgrade_at,
+             cooldown_hours, updated_at)
+            for region_id, status, level, will_be_active_at, last_upgrade_at, cooldown_hours in rows
             if region_id and status
         ]
         await self._conn.execute(
@@ -41,8 +42,8 @@ class RegionStatusMixin:
         if payload:
             await self._conn.executemany(
                 "INSERT INTO region_upgrade_status "
-                "(region_id, upgrade_type, status, level, will_be_active_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(region_id, upgrade_type, status, level, will_be_active_at, last_upgrade_at, "
+                "cooldown_hours, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 payload,
             )
         await self._conn.commit()
@@ -51,12 +52,15 @@ class RegionStatusMixin:
     async def get_region_upgrade_status(self, upgrade_type: str) -> dict[str, dict]:
         out: dict[str, dict] = {}
         async with self._conn.execute(
-            "SELECT region_id, status, level, will_be_active_at "
+            "SELECT region_id, status, level, will_be_active_at, last_upgrade_at, cooldown_hours "
             "FROM region_upgrade_status WHERE upgrade_type = ?",
             (upgrade_type,),
         ) as cur:
             async for row in cur:
-                out[row[0]] = {"status": row[1], "level": row[2], "willBeActiveAt": row[3]}
+                out[row[0]] = {
+                    "status": row[1], "level": row[2], "willBeActiveAt": row[3],
+                    "lastUpgradeAt": row[4], "cooldownHours": row[5],
+                }
         return out
 
     async def save_region_resistance(

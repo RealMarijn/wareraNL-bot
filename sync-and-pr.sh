@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # Automates the safe/reversible part of the "push to fork -> deploy to
 # production" workflow documented in .github/workflows/deploy.yml:
-#   1. Fast-forward local main to origin/main (your fork).
-#   2. Merge upstream/main (colgre/wareraNL-bot) into it, same as the
+#   1. Commit any uncommitted changes in the working tree.
+#   2. Fast-forward local main to origin/main (your fork).
+#   3. Merge upstream/main (colgre/wareraNL-bot) into it, same as the
 #      "Merge branch 'colgre:main' into main" commits already in this
 #      repo's history — mirrors the existing manual habit, doesn't change it.
-#   3. Push the result back to origin (your fork).
-#   4. Open (or create, if none exists yet) the pull request against
+#   4. Push the result back to origin (your fork).
+#   5. Open (or create, if none exists yet) the pull request against
 #      colgre/wareraNL-bot and open it in the browser.
 #
 # Deliberately NOT automated: merging that PR, and triggering the
 # production deploy workflow (workflow_dispatch on deploy.yml). Both touch
 # a shared repo / a live production bot and stay explicit actions you take
 # yourself — see the bottom of this file for the one-line command for each.
+#
+# Usage: ./sync-and-pr.sh ["commit message"]
+#   Uncommitted changes are committed with the given message, or with an
+#   auto-generated "Update <N> file(s)" message if none is given.
 #
 # Requires: gh CLI, authenticated (`gh auth login`).
 
@@ -29,15 +34,22 @@ if ! command -v "$GH" >/dev/null 2>&1; then
     exit 1
 fi
 
-if [[ -n "$(git status --porcelain)" ]]; then
-    echo "❌ Working tree has uncommitted changes — commit or stash them first." >&2
-    exit 1
-fi
-
 current_branch="$(git rev-parse --abbrev-ref HEAD)"
 if [[ "$current_branch" != "$BASE_BRANCH" ]]; then
     echo "❌ Not on '$BASE_BRANCH' (currently on '$current_branch'). Switch first." >&2
     exit 1
+fi
+
+commit_msg="${1:-}"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+    echo "==> Committing uncommitted changes..."
+    git add -A
+    if [[ -z "$commit_msg" ]]; then
+        n_files="$(git diff --cached --name-only | wc -l | tr -d ' ')"
+        commit_msg="Update ${n_files} file(s)"
+    fi
+    git commit -m "$commit_msg"
 fi
 
 fork_owner="$("$GH" api user --jq '.login')"

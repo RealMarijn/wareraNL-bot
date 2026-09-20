@@ -125,30 +125,33 @@ class CompanyTaxMixin:
     # ── company → owner map (tax attribution by owner nationality) ──────────
 
     async def save_company_owner_map(
-        self, rows: Iterable[tuple[str, str, str, str]], updated_at: str
+        self, rows: Iterable[tuple[str, str, str, str, str]], updated_at: str
     ) -> int:
-        """Upsert ``(company_id, owner_id, country_id, item_code)`` rows.
+        """Upsert ``(company_id, owner_id, country_id, item_code, region_id)`` rows.
 
         Built from the same ``company.getById`` responses the census phase
         already reads, for every company seen (not just staffed ones), so
         this costs no extra API calls. Read by ``/tax-breakdown`` to trace a
         ``company_tax_revenue`` row — which carries only a company id — back
-        to the owner's nationality via ``citizen_levels``.
+        to the owner's nationality via ``citizen_levels``; ``region_id`` is
+        read by ``/fabrieken`` for its per-region company breakdown (see
+        ``region_snapshots`` for the id -> name lookup).
         """
         payload = [
-            (str(c), str(o), str(co), str(i), updated_at)
-            for c, o, co, i in rows
+            (str(c), str(o), str(co), str(i), str(r) if r else None, updated_at)
+            for c, o, co, i, r in rows
             if c and o
         ]
         if not payload:
             return 0
         await self._conn.executemany(
             "INSERT INTO company_owner_map "
-            "(company_id, owner_id, country_id, item_code, updated_at) "
-            "VALUES (?, ?, ?, ?, ?) "
+            "(company_id, owner_id, country_id, item_code, region_id, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(company_id) DO UPDATE SET "
             "  owner_id = excluded.owner_id, country_id = excluded.country_id, "
-            "  item_code = excluded.item_code, updated_at = excluded.updated_at",
+            "  item_code = excluded.item_code, region_id = excluded.region_id, "
+            "  updated_at = excluded.updated_at",
             payload,
         )
         await self._conn.commit()

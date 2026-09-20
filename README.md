@@ -84,6 +84,11 @@ docker compose stop discord-bot
 ### data-fetcher
 
 Hourly background fetcher for citizen levels, MU memberships, etc. Writes to `database/external.db`.
+Without it running, every country except NL (which the main bot refreshes itself every hour — see
+`cogs/tasks/citizens.py`) has its cached data — `/paraatheid land:`, `/fabrieken`, `/tax-breakdown`,
+etc. — frozen at whatever it last was.
+
+Local (docker):
 
 ```bash
 # Recreate
@@ -94,6 +99,15 @@ docker compose -f docker-compose.data-fetcher.yml logs -f data-fetcher
 
 # Stop
 docker compose -f docker-compose.data-fetcher.yml stop data-fetcher
+```
+
+Production (systemd — no docker there): `deploy.sh` provisions and restarts a
+`wareranl-datafetcher` service on every deploy (see the "Provisioning wareranl-datafetcher
+service" block at the bottom of that script). To check on it directly on the server:
+
+```bash
+sudo systemctl status wareranl-datafetcher
+sudo journalctl -u wareranl-datafetcher -f
 ```
 
 ---

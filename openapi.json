@@ -4751,6 +4751,270 @@
           }
         }
       }
+    },
+    "/contribution.getCountryUnrestContributions": {
+      "post": {
+        "tags": [
+          "contribution"
+        ],
+        "description": "Retrieves a paginated list of citizen contributions (e.g. resources donated) toward a country's unrest",
+        "summary": "Get country unrest contributions",
+        "operationId": "contribution.getCountryUnrestContributions",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": {
+                  "results": [
+                    {
+                      "_id": "6aa9af5aeebfa81b9b7d313b",
+                      "type": "unrest",
+                      "user": {
+                        "_id": "...",
+                        "username": "..."
+                      },
+                      "country": "6813b6d446e731854c7ac7a0",
+                      "amount": 1,
+                      "resource": "energy",
+                      "createdAt": "2026-09-15T20:49:30.655Z",
+                      "updatedAt": "2026-09-15T20:49:30.655Z"
+                    }
+                  ],
+                  "count": 42,
+                  "limit": 10,
+                  "page": 1,
+                  "pages": 5,
+                  "nextPage": 2
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "countryId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The unique identifier of the country"
+                  },
+                  "page": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Page number (1-based)"
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Number of results per page"
+                  }
+                },
+                "required": [
+                  "countryId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/contribution.getRegionContributions": {
+      "post": {
+        "tags": [
+          "contribution"
+        ],
+        "description": "Retrieves a paginated list of citizen contributions (e.g. resources donated) toward a region's resistance",
+        "summary": "Get region resistance contributions",
+        "operationId": "contribution.getRegionContributions",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": {
+                  "results": [
+                    {
+                      "_id": "6a1dfe604f1845426c0b9180",
+                      "type": "resistance",
+                      "user": {
+                        "_id": "...",
+                        "username": "..."
+                      },
+                      "region": "6813b7039403bc4170a5d68a",
+                      "amount": 1,
+                      "resource": "energy",
+                      "createdAt": "2026-09-15T22:24:00.000Z",
+                      "updatedAt": "2026-09-15T22:24:00.000Z"
+                    }
+                  ],
+                  "count": 12,
+                  "limit": 10,
+                  "page": 1,
+                  "pages": 2,
+                  "nextPage": 2
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "regionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The unique identifier of the region"
+                  },
+                  "page": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Page number (1-based)"
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Number of results per page"
+                  }
+                },
+                "required": [
+                  "regionId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/upgradeConstruction.getMapConstructions": {
+      "post": {
+        "tags": [
+          "upgradeConstruction"
+        ],
+        "description": "Retrieves every in-progress region-upgrade construction project across the whole map. No input required. Empty array when nothing is currently under construction anywhere.",
+        "summary": "Get all map-wide upgrade constructions",
+        "operationId": "upgradeConstruction.getMapConstructions",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": []
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/upgradeConstruction.getRegionConstructions": {
+      "post": {
+        "tags": [
+          "upgradeConstruction"
+        ],
+        "description": "Retrieves every in-progress upgrade construction project for one region. Empty array when that region has nothing currently under construction.",
+        "summary": "Get a region's upgrade constructions",
+        "operationId": "upgradeConstruction.getRegionConstructions",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": []
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "regionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The unique identifier of the region"
+                  }
+                },
+                "required": [
+                  "regionId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/upgradeConstruction.listConstructions": {
+      "post": {
+        "tags": [
+          "upgradeConstruction"
+        ],
+        "description": "Retrieves a paginated list of upgrade construction projects, filtered by region or country (at least one of the two is required \u2014 confirmed live: omitting both returns a 400 'regionId or countryId is required'). Cursor pagination uses the construction document's own Mongo _id (confirmed live: a non-ObjectId cursor value 500s with a Mongoose cast error naming the underlying 'UpgradeConstruction' model).",
+        "summary": "List upgrade constructions by region or country",
+        "operationId": "upgradeConstruction.listConstructions",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": {
+                  "items": []
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "regionId": {
+                    "type": "string",
+                    "description": "The unique identifier of the region (regionId or countryId required)"
+                  },
+                  "countryId": {
+                    "type": "string",
+                    "description": "The unique identifier of the country (regionId or countryId required)"
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum number of constructions to return"
+                  },
+                  "cursor": {
+                    "type": "string",
+                    "description": "Pagination cursor \u2014 the _id of the last construction from the previous page"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
     }
   },
   "servers": [

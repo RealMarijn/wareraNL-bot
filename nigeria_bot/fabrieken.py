@@ -18,6 +18,12 @@ neither          Top 10 countries and top 10 items, by company count
 eigenaren=True   Largest owners, scoped by whichever filters were given
 ===============  ==========================================================
 
+Whenever ``land`` is given (and ``eigenaren`` isn't), a "By region" table is
+added showing how many companies that country has in each of its regions —
+from ``company_owner_map``'s ``region_id`` column and the ``region_snapshots``
+name lookup, both populated by the same company-census sweep, so this costs
+no extra API calls either.
+
 Two modifiers apply on top:
   * ``alles=True`` prints the full owner list across several messages instead
     of the top 25.
@@ -306,6 +312,62 @@ class FabriekenCog(commands.Cog, name="fabrieken"):
             (at, limit),
         ) as cur:
             return [(str(r[0]), int(r[1] or 0), int(r[2] or 0)) for r in await cur.fetchall()]
+
+    async def _by_region(
+        self, conn, country_id: str, item_code: str | None = None
+    ) -> list[tuple[str, str, int]]:
+        """``(region_id, region_name, companies)`` for one country, ranked.
+
+        Reads ``company_owner_map`` rather than ``company_census`` — the
+        census is pre-aggregated by (country, item) and has no per-region
+        granularity, while the owner map keeps one row per company (latest
+        sweep only), which is exactly what a COUNT(*) GROUP BY region needs.
+        Optionally scoped to one item, same filter shape as the tax block.
+        """
+        where = ["m.country_id = ?", "m.region_id IS NOT NULL", "m.region_id != ''"]
+        params: list[str] = [country_id]
+        if item_code:
+            where.append("m.item_code = ?")
+            params.append(item_code)
+        clause = " AND ".join(where)
+        async with conn.execute(
+            f"SELECT m.region_id, COALESCE(r.name, m.region_id), COUNT(*) "
+            f"FROM company_owner_map m "
+            f"LEFT JOIN region_snapshots r ON r.region_id = m.region_id "
+            f"WHERE {clause} "
+            f"GROUP BY m.region_id ORDER BY 3 DESC",
+            params,
+        ) as cur:
+            return [
+                (str(r[0]), str(r[1]), int(r[2] or 0)) for r in await cur.fetchall()
+            ]
+
+    async def _region_block(
+        self, conn, country_id: str, item_code: str | None
+    ) -> tuple[str, str] | None:
+        """Return ``(field_name, field_value)`` for the per-region field.
+
+        None when the owner map isn't available yet, or has no region data
+        for this country yet (e.g. right after the region_id column was
+        added, before the next hourly sweep has run) — same "just omit it"
+        approach as ``_tax_block`` for a fetcher table that isn't ready yet,
+        rather than showing an empty or misleading table.
+        """
+        if not await self._owner_map_available(conn):
+            return None
+        rows = await self._by_region(conn, country_id, item_code)
+        if not rows:
+            return None
+
+        shown = rows[:_MAX_LIST_ROWS]
+        table = _table(
+            ("Region", "Companies"), (24, 9),
+            [(name, _fmt_int(c)) for _, name, c in shown],
+        )
+        lines = [table]
+        if len(rows) > len(shown):
+            lines.append(f"*…and {len(rows) - len(shown)} more regions.*")
+        return ("📍 By region", "\n".join(lines))
 
     async def _owner_rows(
         self, conn, country_id: str | None, item_code: str | None, limit: int,
@@ -890,6 +952,24 @@ class FabriekenCog(commands.Cog, name="fabrieken"):
                 embeds = [await self._view_by_item(conn, at, base_at, country, staffed)]
             else:
                 embeds = [await self._view_overview(conn, at, names, staffed)]
+
+            # Per-region breakdown — only meaningful once a country is fixed
+            # (region ownership is a country-level question); skipped for the
+            # owners view, which is already its own breakdown by a different
+            # dimension. Optionally scoped to item_code too, same as the
+            # tax block below.
+            if country and not eigenaren:
+                try:
+                    region_field = await self._region_block(
+                        conn, country[0], item_code
+                    )
+                except Exception:
+                    logger.exception("fabrieken: region block failed")
+                    region_field = None
+                if region_field is not None:
+                    embeds[-1].add_field(
+                        name=region_field[0], value=region_field[1], inline=False
+                    )
 
             # Tax revenue is always shown, scoped to whatever filters were
             # given. The per-day table lands on the last embed as a field (a

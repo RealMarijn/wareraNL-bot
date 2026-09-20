@@ -264,6 +264,56 @@ async def fetch_alliance_countries(client: APIClient, db: Database) -> int:
         return 0
 
 
+async def _fetch_base_cooldown_hours_by_country(
+    client: APIClient, country_ids: list[str]
+) -> dict[str, float]:
+    """Resolve each country's current base-upgrade cooldown length (hours).
+
+    Bunkers always cool down in 8h regardless of politics — this is only for
+    "base", whose cooldown is shortened by the *owning* country's ruling
+    party's militarism ethic: 8h normally, 4h at militarism 1 (Expansionist),
+    2h at militarism >= 2 (Fanatic Expansionist). Two extra sweeps of
+    tRPC-batched lookups (country -> rulingParty -> ethics.militarism), each
+    keyed by the small set of *distinct* countries/parties actually present
+    (~190, not per-region), so this stays cheap next to the 726-region
+    upgrade-status sweep it feeds into.
+    """
+    country_ids = sorted(set(country_ids))
+    country_results = await client.batch_get(
+        "/country.getCountryById",
+        [{"countryId": cid} for cid in country_ids],
+        batch_size=_REGION_STATUS_BATCH,
+    )
+    ruling_party: dict[str, str] = {}
+    for cid, raw_c in zip(country_ids, country_results):
+        c = _unwrap_trpc(raw_c) if isinstance(raw_c, dict) else raw_c
+        party = c.get("rulingParty") if isinstance(c, dict) else None
+        if party:
+            ruling_party[cid] = str(party)
+
+    party_ids = sorted(set(ruling_party.values()))
+    party_results = await client.batch_get(
+        "/party.getById",
+        [{"partyId": pid} for pid in party_ids],
+        batch_size=_REGION_STATUS_BATCH,
+    )
+    militarism_by_party: dict[str, int] = {}
+    for pid, raw_p in zip(party_ids, party_results):
+        p = _unwrap_trpc(raw_p) if isinstance(raw_p, dict) else raw_p
+        ethics = p.get("ethics") if isinstance(p, dict) else None
+        if isinstance(ethics, dict):
+            try:
+                militarism_by_party[pid] = int(ethics.get("militarism") or 0)
+            except (TypeError, ValueError):
+                pass
+
+    cooldown_by_country: dict[str, float] = {}
+    for cid in country_ids:
+        militarism = militarism_by_party.get(ruling_party.get(cid, ""), 0)
+        cooldown_by_country[cid] = 2.0 if militarism >= 2 else 4.0 if militarism == 1 else 8.0
+    return cooldown_by_country
+
+
 async def fetch_region_status(client: APIClient, db: Database) -> tuple[int, int]:
     """Sweep every region's resistance and base/bunker upgrade status.
 
@@ -281,6 +331,12 @@ async def fetch_region_status(client: APIClient, db: Database) -> tuple[int, int
     writing) — so that's treated the same as an explicit disabled/level 0
     rather than silently dropping the region from the output.
 
+    Also captures each upgrade's ``lastUpgradeAt`` plus the resolved cooldown
+    length (see ``_fetch_base_cooldown_hours_by_country``), so the extension
+    can show "still on cooldown" independent of active/pending/disabled
+    status — the cooldown blocks starting a new upgrade *or* downgrade
+    regardless of the upgrade's current state.
+
     Returns ``(resistance_rows_written, upgrade_rows_written)``.
     """
     dataset = "all_countries.region_status"
@@ -294,6 +350,12 @@ async def fetch_region_status(client: APIClient, db: Database) -> tuple[int, int
 
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         region_ids = [str(r.get("_id")) for r in regions if r.get("_id")]
+        # Owning country per region — already present on region.getAll's own
+        # objects (the `country` field), no extra API call needed for this part.
+        region_country = {
+            str(r.get("_id")): str(r.get("country"))
+            for r in regions if r.get("_id") and r.get("country")
+        }
 
         resistance_rows = [
             (str(r.get("_id")), _to_float(r.get("resistance")) or 0.0,
@@ -302,13 +364,17 @@ async def fetch_region_status(client: APIClient, db: Database) -> tuple[int, int
         ]
         res_written = await db.save_region_resistance(resistance_rows, now_iso)
 
+        base_cooldown_by_country = await _fetch_base_cooldown_hours_by_country(
+            client, list(region_country.values())
+        )
+
         upgrade_written: dict[str, int] = {}
         for upgrade_type in ("base", "bunker"):
             inputs = [{"regionId": rid, "upgradeType": upgrade_type} for rid in region_ids]
             results = await client.batch_get(
                 "/upgrade.getUpgradeByTypeAndEntity", inputs, batch_size=_REGION_STATUS_BATCH,
             )
-            rows: list[tuple[str, str, int, str | None]] = []
+            rows: list[tuple[str, str, int, str | None, str | None, float | None]] = []
             for rid, raw_up in zip(region_ids, results):
                 up = _unwrap_trpc(raw_up) if isinstance(raw_up, dict) else raw_up
                 if isinstance(up, dict):
@@ -318,13 +384,18 @@ async def fetch_region_status(client: APIClient, db: Database) -> tuple[int, int
                     except (TypeError, ValueError):
                         level = 0
                     will_be_active_at = up.get("willBeActiveAt")
+                    last_upgrade_at = up.get("lastUpgradeAt")
                 else:
                     # 404 ("Upgrades not found") for a region that's never had
                     # this upgrade built at all — batch_get unwraps the error
                     # response to None. Same meaning as an explicit disabled/
                     # level 0, not a fetch failure to skip.
-                    status, level, will_be_active_at = "disabled", 0, None
-                rows.append((rid, status, level, will_be_active_at))
+                    status, level, will_be_active_at, last_upgrade_at = "disabled", 0, None, None
+                cooldown_hours = (
+                    8.0 if upgrade_type == "bunker"
+                    else base_cooldown_by_country.get(region_country.get(rid, ""), 8.0)
+                )
+                rows.append((rid, status, level, will_be_active_at, last_upgrade_at, cooldown_hours))
             upgrade_written[upgrade_type] = await db.save_region_upgrade_status(
                 upgrade_type, rows, now_iso
             )
@@ -836,6 +907,12 @@ async def fetch_company_census(client: APIClient, db: Database) -> int:
     ``fetch_missing_owner_citizenships`` / ``fetch_missing_worker_citizenships``
     running right after this function, for the *next* sweep.
 
+    Also writes ``region_snapshots`` (every region's id/code/name/controlling
+    country, from the same ``region.getRegionsObject`` call above) and a
+    ``region_id`` on each ``company_owner_map`` row, so ``/fabrieken`` can
+    break a country's companies down by region — no extra API calls, since
+    both were already being read to resolve each company's country.
+
     Returns the number of census rows written.
     """
     dataset = "all_countries.company_census"
@@ -848,6 +925,10 @@ async def fetch_company_census(client: APIClient, db: Database) -> int:
         if not isinstance(regions, dict) or not regions:
             raise RuntimeError("getRegionsObject returned no regions")
         region_country: dict[str, str] = {}
+        # (region_id, code, name, country_id) — same response, kept for
+        # region_snapshots so /fabrieken can label a region breakdown by name
+        # instead of a raw id, at no extra API cost.
+        region_snapshot_rows: list[tuple[str, str, str, str]] = []
         for rid, robj in regions.items():
             if not isinstance(robj, dict):
                 continue
@@ -856,6 +937,10 @@ async def fetch_company_census(client: APIClient, db: Database) -> int:
                 country = country.get("_id") or country.get("id")
             if country:
                 region_country[str(rid)] = str(country)
+            region_snapshot_rows.append((
+                str(rid), robj.get("code") or "", robj.get("name") or "",
+                str(country) if country else "",
+            ))
 
         # ── phase 1: every company ID ────────────────────────────────────────
         company_ids: list[str] = []
@@ -989,7 +1074,8 @@ async def fetch_company_census(client: APIClient, db: Database) -> int:
                 if company.get("disabledAt"):
                     disabled += 1
                     continue
-                country_id = region_country.get(str(company.get("region") or ""))
+                region_id = str(company.get("region") or "")
+                country_id = region_country.get(region_id)
                 item_code = str(company.get("itemCode") or "")
                 if not country_id or not item_code:
                     continue
@@ -1012,6 +1098,7 @@ async def fetch_company_census(client: APIClient, db: Database) -> int:
                     "item_code": item_code,
                     "owner_id": owner_id,
                     "company_id": str(company.get("_id") or ""),
+                    "region_id": region_id,
                     "raw_workers": raw_workers,
                 })
 
@@ -1069,7 +1156,7 @@ async def fetch_company_census(client: APIClient, db: Database) -> int:
         # known for every staffed company ─────────────────────────────────
         counts: dict[tuple[str, str], list[int]] = {}
         owner_counts: dict[tuple[str, str, str], list[int]] = {}
-        owner_map_rows: list[tuple[str, str, str, str]] = []
+        owner_map_rows: list[tuple[str, str, str, str, str]] = []
         for c in active_companies:
             workers = effective_workers.get(c["company_id"], c["raw_workers"])
             staffed = 1 if workers > 0 else 0
@@ -1087,9 +1174,10 @@ async def fetch_company_census(client: APIClient, db: Database) -> int:
                 obucket[1] += workers
                 obucket[2] += staffed
                 if c["company_id"]:
-                    owner_map_rows.append(
-                        (c["company_id"], c["owner_id"], c["country_id"], c["item_code"])
-                    )
+                    owner_map_rows.append((
+                        c["company_id"], c["owner_id"], c["country_id"],
+                        c["item_code"], c["region_id"],
+                    ))
 
         captured_at = datetime.now(timezone.utc).isoformat()
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -1118,6 +1206,12 @@ async def fetch_company_census(client: APIClient, db: Database) -> int:
         ).isoformat()
         pruned_owner_map = await db.prune_company_owner_map(owner_map_cutoff)
 
+        # Every region, not just ones with companies — costs nothing extra,
+        # since region.getRegionsObject above already returned all of them.
+        region_snapshots_written = await db.save_region_snapshots(
+            region_snapshot_rows, captured_at
+        )
+
         cutoff = (
             datetime.now(timezone.utc) - timedelta(days=CENSUS_RETENTION_DAYS)
         ).isoformat()
@@ -1127,9 +1221,10 @@ async def fetch_company_census(client: APIClient, db: Database) -> int:
         logger.info(
             "company_census: listed=%d reconciled=%d checked=%d disabled=%d "
             "inactive_owner=%d banned_worker_hits=%d rows=%d owners=%d "
-            "workers=%d owner_map=%d pruned=%d pruned_owner_map=%d (%.1fs)",
+            "workers=%d owner_map=%d regions=%d pruned=%d pruned_owner_map=%d (%.1fs)",
             len(company_ids), reconciled_new, checked, disabled, inactive_owner,
             banned_worker_hits, written, owner_rows, mapped, owner_map_written,
+            region_snapshots_written,
             pruned, pruned_owner_map, duration_ms / 1000,
         )
         return written
