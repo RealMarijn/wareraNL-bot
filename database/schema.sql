@@ -934,14 +934,36 @@ CREATE TABLE IF NOT EXISTS country_tax_rates (
 -- responses the census phase already reads, so it costs no extra API calls;
 -- populated for every company seen, not just staffed ones. Read by the
 -- Nigeria bot's /tax-breakdown command.
+-- region_id (added post-launch) is the same company.getById "region" field,
+-- kept alongside the country it resolves to so /fabrieken can break a
+-- country's companies down by region without any extra API calls either.
 CREATE TABLE IF NOT EXISTS company_owner_map (
     company_id TEXT PRIMARY KEY,
     owner_id   TEXT NOT NULL,
     country_id TEXT NOT NULL,
     item_code  TEXT NOT NULL,
+    region_id  TEXT,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_company_owner_map_owner ON company_owner_map(owner_id);
+-- idx_company_owner_map_region is created in services/db/base.py, AFTER
+-- migrations run — region_id is only guaranteed to exist post-migration on
+-- a pre-existing database (this CREATE TABLE is a no-op there), so an index
+-- on it here would fail with "no such column" on any database created
+-- before region_id was added.
+
+-- Region id -> name/code/controlling-country, refreshed every company-census
+-- sweep from region.getRegionsObject (already fetched in full to resolve
+-- each company's country — this just also keeps the name/code fields that
+-- call already returns for free). Every region is written, not just ones
+-- with companies, so a region without any company still resolves by name.
+CREATE TABLE IF NOT EXISTS region_snapshots (
+    region_id  TEXT PRIMARY KEY,
+    code       TEXT,
+    name       TEXT,
+    country_id TEXT,
+    updated_at TEXT NOT NULL
+);
 
 -- Tax revenue aggregated per day per (country, item, company).  Daily buckets
 -- keep this bounded at roughly one row per staffed company per day (~10k),
@@ -1037,6 +1059,10 @@ CREATE TABLE IF NOT EXISTS region_upgrade_status (
     status            TEXT NOT NULL,   -- 'active' | 'pending' | 'disabled'
     level             INTEGER NOT NULL DEFAULT 0,
     will_be_active_at TEXT,            -- ISO-8601; only meaningful while status='pending'
+    last_upgrade_at   TEXT,            -- ISO-8601; last time an upgrade/downgrade was started here
+    cooldown_hours    REAL,            -- hours after last_upgrade_at before another action is allowed
+                                        -- (bunkers: always 8; bases: 8/4/2 by the owning country's
+                                        -- ruling party's militarism ethic — see full_fetcher.py)
     updated_at        TEXT NOT NULL,
     PRIMARY KEY (region_id, upgrade_type)
 );
@@ -1061,4 +1087,20 @@ CREATE TABLE IF NOT EXISTS country_proxy_status (
     origin_id  TEXT NOT NULL,   -- country the majority of immigrants came from
     rate       REAL NOT NULL DEFAULT 0,  -- fraction (0..1) of citizens who are immigrants at all
     updated_at TEXT NOT NULL
+);
+
+-- ── Third-party "intel" RSS feed ────────────────────────────────────────────
+-- Polled every ~2 min by rijksoverheid_web/app/services/intel_feed.py (INTEL_FEED_URL, see .env)
+-- — read by the extension's whitelisted-only /api/ext/intel/feed endpoint (see
+-- rijksoverheid_web/app/routers/extension_intel.py). event_id is the numeric part of the feed's
+-- own "intel-event-<N>" guid — monotonically increasing, used directly as both primary key (for
+-- INSERT OR IGNORE dedup) and as the cursor extension clients page forward from.
+CREATE TABLE IF NOT EXISTS intel_feed_items (
+    event_id    INTEGER PRIMARY KEY,
+    title       TEXT NOT NULL,
+    link        TEXT,
+    category    TEXT,
+    description TEXT,
+    pub_date    TEXT NOT NULL,  -- ISO-8601 UTC, from the feed's own <pubDate>
+    fetched_at  TEXT NOT NULL
 );

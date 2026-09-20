@@ -92,6 +92,17 @@ class DatabaseBase:
         # Apply incremental column additions (safe no-ops if already present)
         await self._apply_migrations()
 
+        # Indexes on columns added by the migrations above — must run after
+        # them, since CREATE TABLE IF NOT EXISTS above is a no-op on a
+        # database that already has the table (i.e. every existing
+        # deployment), so the column those migrations add doesn't exist yet
+        # when schema.sql itself runs.
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_company_owner_map_region "
+            "ON company_owner_map(country_id, region_id)"
+        )
+        await self._conn.commit()
+
         logger.info("Database initialized at %s", self.path)
 
     async def _apply_migrations(self) -> None:
@@ -177,6 +188,13 @@ class DatabaseBase:
             ("citizen_wealth_history", "wealth_money REAL"),
             ("citizen_wealth_history", "wealth_equipments REAL"),
             ("citizen_wealth_history", "wealth_weapons REAL"),
+            # region_upgrade_status — last-action timestamp + resolved cooldown length, so the
+            # extension can show "still on cooldown" independent of active/pending/disabled status.
+            ("region_upgrade_status", "last_upgrade_at TEXT"),
+            ("region_upgrade_status", "cooldown_hours REAL"),
+            # company_owner_map — region_id, so /fabrieken can break a country's
+            # companies down by region (see region_snapshots for names).
+            ("company_owner_map", "region_id TEXT"),
         ]
         for table, column_def in migrations:
             try:

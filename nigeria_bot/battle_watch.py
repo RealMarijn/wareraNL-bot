@@ -6,6 +6,13 @@ fighting, the round number, this round's damage per side, and the current
 ground points — defender on the left, attacker on the right, matching how
 the game's own battle page frames it.
 
+Also suppresses Discord's own generic link-preview embed for ANY
+app.warera.io link (not just battle links, and whether or not a summary was
+posted) — see ``on_message_edit`` below for why that has to happen on edit
+rather than on send, and why it only touches messages where every embed is
+from app.warera.io (so a warera.io link posted next to a gif never takes
+the gif's embed down with it).
+
 Live API only (``battle.getById`` + ``battle.getLiveBattleData`` +
 ``country.getCountryById`` ×2), same lightweight aiohttp +
 ``WARERA_API_BASE``/``WARERA_API_KEY`` pattern as the rest of nigeria_bot
@@ -30,6 +37,7 @@ import json
 import logging
 import os
 import re
+from urllib.parse import urlparse
 
 import aiohttp
 import discord
@@ -111,6 +119,47 @@ class BattleWatchCog(commands.Cog, name="battle_watch"):
             await message.channel.send(embed=embed)
         except discord.HTTPException as exc:
             logger.error("battle_watch: failed to send summary for %s: %s", battle_id, exc)
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        """Suppress Discord's own generic link-preview embed once it appears.
+
+        Discord attaches the og:title/og:description preview for a link
+        *asynchronously* — its crawler fetches the page after the message is
+        already sent, then patches the message in with a MESSAGE_UPDATE
+        (which discord.py surfaces here, not in on_message). Suppressing in
+        on_message itself is too early: the message has no embeds yet at
+        that point, and the flag doesn't survive the crawler's later patch.
+        Reacting to the embed's actual arrival is the only reliable point —
+        confirmed live after suppressing at message-send time silently had
+        no effect (the generic "War Era - New online multiplayer game"
+        embed still appeared).
+
+        Scope: ANY app.warera.io link, not just /battle/ — the whole site is
+        a client-rendered SPA serving identical static OpenGraph tags no
+        matter the page (confirmed via curl spoofing Discord's crawler
+        user-agent, even against a nonexistent battle ID), so every
+        app.warera.io embed is the same generic placeholder worth hiding.
+
+        Safety: suppression is an all-or-nothing MESSAGE flag — Discord has
+        no way to hide just one embed in a message that has several (e.g. a
+        warera.io link posted alongside a gif link, which unfurls its own
+        embed). So this only fires when EVERY newly-added embed on the
+        message resolves to app.warera.io; a mixed message is left alone
+        entirely rather than risk suppressing an unrelated embed (a gif)
+        along with it.
+        """
+        if after.author.bot:
+            return
+        if before.embeds or not after.embeds:
+            return
+        hosts = {urlparse(e.url or "").hostname or "" for e in after.embeds}
+        if hosts != {"app.warera.io"}:
+            return
+        try:
+            await after.edit(suppress=True)
+        except discord.HTTPException as exc:
+            logger.warning("battle_watch: failed to suppress default embed: %s", exc)
 
     async def _build_summary(self, battle_id: str) -> discord.Embed | None:
         async with aiohttp.ClientSession() as sess:

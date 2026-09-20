@@ -292,6 +292,49 @@ TICKET_CATEGORY_NAME = "🔐 Verificaties"
 WARERA_API_BASE      = "https://api2.warera.io/trpc"
 WARERA_API_KEY       = os.environ.get("WARERA_API_KEY", "")
 
+# Read-only access to the shared external.db, written hourly by the
+# data-fetcher container — same file/pattern as nigeria_bot/fabrieken.py's
+# country picker. Used to offer only real in-game countries in the embassy
+# request flow instead of a free-text field (see EmbassyCountryView), so a
+# typo like "Tunsia" can no longer spawn its own bogus ambassador role.
+EXTERNAL_DB_PATH = os.getenv("RW_EXTERNAL_DB_PATH", "database/external.db")
+
+
+async def _known_country_names() -> list[str]:
+    """Live in-game country names from country_snapshots, sorted case-insensitively.
+
+    Falls back to the static ALL_COUNTRY_NAMES list if the DB read fails or
+    the table is empty (e.g. before the fetcher has ever run) — the embassy
+    picker must never come up empty just because the hourly sweep hasn't
+    happened yet.
+    """
+    try:
+        async with aiosqlite.connect(f"file:{EXTERNAL_DB_PATH}?mode=ro", uri=True) as conn:
+            async with conn.execute(
+                "SELECT name FROM country_snapshots WHERE name IS NOT NULL AND name != ''"
+            ) as cur:
+                names = sorted({str(r[0]) for r in await cur.fetchall()}, key=str.casefold)
+                if names:
+                    return names
+    except Exception:
+        logger.debug("embassy: country_snapshots lookup failed", exc_info=True)
+    from services.country_utils import ALL_COUNTRY_NAMES
+    return sorted(ALL_COUNTRY_NAMES, key=str.casefold)
+
+
+async def _land_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for /verifieer's `land` option — suggestions only; the
+    command itself still rejects anything that isn't an exact match (see
+    verifieer's body), since autocomplete doesn't stop free text being sent."""
+    del interaction
+    names = await _known_country_names()
+    needle = (current or "").strip().lower()
+    return [
+        app_commands.Choice(name=n, value=n) for n in names if needle in n.lower()
+    ][:25]
+
 # Delay between consecutive API calls during bulk sync.
 # With API key: 0.15 s ≈ 400 req/min. Without: 0.7 s ≈ 85 req/min (under the 100/min anon limit).
 _SYNC_DELAY = 0.15 if WARERA_API_KEY else 0.7
@@ -781,16 +824,20 @@ async def _create_ticket(
 # ── Retry view (shown after an invalid URL submission) ────────────────────────
 
 class _RetryView(discord.ui.View):
-    def __init__(self, ticket_type: str) -> None:
+    def __init__(self, ticket_type: str, *, country: str = "") -> None:
         super().__init__(timeout=120)
         self.ticket_type = ticket_type
+        self.country = country
         if _ticket_is_english(ticket_type):
             self.retry.label = "↩️ Try again"
 
     @discord.ui.button(label="↩️ Probeer opnieuw", style=discord.ButtonStyle.primary)
     async def retry(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if self.ticket_type == "embassy":
-            await interaction.response.send_modal(EmbassyModal())
+            # Country was already picked from the country list before this
+            # modal was ever shown — a retry only needs to re-collect the
+            # URL, not send the user back through the picker again.
+            await interaction.response.send_modal(EmbassyModal(self.country))
         else:
             await interaction.response.send_modal(CitizenModal(self.ticket_type))
 
@@ -831,21 +878,19 @@ class CitizenModal(discord.ui.Modal):
 
 
 class EmbassyModal(discord.ui.Modal):
-    def __init__(self) -> None:
-        super().__init__(title="Embassy request")
-        self.country = discord.ui.TextInput(
-            label="Country you represent",
-            placeholder="E.g. Belgium, Morocco, Germany…",
-            min_length=2,
-            max_length=60,
-        )
+    """WarEra profile URL only — the country is picked beforehand via
+    EmbassyCountryView, so it never needs to be typed (and can't be
+    misspelled) here."""
+
+    def __init__(self, country: str) -> None:
+        super().__init__(title=f"Embassy request — {country}"[:45])
+        self.country = country
         self.warera_url = discord.ui.TextInput(
             label="WarEra profile URL",
             placeholder="https://app.warera.io/user/695579c03f0cff6efb694b3a",
             min_length=10,
             max_length=120,
         )
-        self.add_item(self.country)
         self.add_item(self.warera_url)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -856,15 +901,81 @@ class EmbassyModal(discord.ui.Modal):
                 "`https://app.warera.io/user/695579c03f0cff6efb694b3a`\n\n"
                 "Click the button to try again.",
                 ephemeral=True,
-                view=_RetryView("embassy"),
+                view=_RetryView("embassy", country=self.country),
             )
             return
         await interaction.response.defer(ephemeral=True)
         await _create_ticket(
             interaction, "embassy",
             warera_url=url,
-            country=self.country.value.strip(),
+            country=self.country,
         )
+
+
+class EmbassyCountryView(discord.ui.View):
+    """Paginated country picker shown before EmbassyModal.
+
+    A plain Select tops out at 25 options — WarEra has ~180 countries — and
+    a Select *inside* a modal is rejected outright by Discord's API (see
+    _congress_templates.py's module docstring in the main bot for the same
+    finding), so this can't just be one big dropdown or a country field
+    inside the modal itself. Paging a 25-wide Select with Previous/Next
+    buttons keeps every option a real, exact in-game country name — the
+    typo that spawned "AmbassadorTunsia" is now structurally impossible,
+    since nothing here is ever typed.
+    """
+
+    _PAGE_SIZE = 25
+
+    def __init__(self, countries: list[str], *, page: int = 0) -> None:
+        super().__init__(timeout=300)
+        self.countries = countries
+        self.page = page
+        self._build()
+
+    @property
+    def _page_count(self) -> int:
+        return max(1, -(-len(self.countries) // self._PAGE_SIZE))  # ceil div
+
+    def _build(self) -> None:
+        self.clear_items()
+        start = self.page * self._PAGE_SIZE
+        page_countries = self.countries[start:start + self._PAGE_SIZE]
+
+        select: discord.ui.Select = discord.ui.Select(
+            placeholder=f"Select your country… (page {self.page + 1}/{self._page_count})",
+            options=[discord.SelectOption(label=c) for c in page_countries],
+        )
+
+        async def _on_select(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(EmbassyModal(select.values[0]))
+
+        select.callback = _on_select
+        self.add_item(select)
+
+        prev_button = discord.ui.Button(
+            label="◀ Previous", style=discord.ButtonStyle.secondary,
+            disabled=self.page == 0,
+        )
+        prev_button.callback = self._on_prev
+        self.add_item(prev_button)
+
+        next_button = discord.ui.Button(
+            label="Next ▶", style=discord.ButtonStyle.secondary,
+            disabled=start + self._PAGE_SIZE >= len(self.countries),
+        )
+        next_button.callback = self._on_next
+        self.add_item(next_button)
+
+    async def _on_prev(self, interaction: discord.Interaction) -> None:
+        self.page -= 1
+        self._build()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_next(self, interaction: discord.Interaction) -> None:
+        self.page += 1
+        self._build()
+        await interaction.response.edit_message(view=self)
 
 # ── Shared approve logic (used by button and slash command) ──────────────────
 
@@ -1151,7 +1262,12 @@ class VerificationView(discord.ui.View):
         custom_id="verify:embassy",
     )
     async def embassy(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(EmbassyModal())
+        countries = await _known_country_names()
+        await interaction.response.send_message(
+            "🏛️ **Embassy request** — select the country you represent:",
+            view=EmbassyCountryView(countries),
+            ephemeral=True,
+        )
 
 # ── Staff check ───────────────────────────────────────────────────────────────
 
@@ -1635,7 +1751,7 @@ class VerificationCog(commands.Cog, name="verification"):
         user="Het Discord-lid om te verifiëren",
         type="Het type verificatie",
         warera_url="De WarEra-profiel URL (https://app.warera.io/user/…)",
-        land="Alleen bij Ambassade: het land dat deze persoon vertegenwoordigt",
+        land="Alleen bij Ambassade: het land dat deze persoon vertegenwoordigt (kies uit de suggesties)",
     )
     @app_commands.choices(type=[
         app_commands.Choice(name="🇳🇬 Nigerian",                  value="nigerian"),
@@ -1643,6 +1759,7 @@ class VerificationCog(commands.Cog, name="verification"):
         app_commands.Choice(name="🇳🇱 Nederlander",               value="dutch"),
         app_commands.Choice(name="🏛️ Ambassade",                  value="embassy"),
     ])
+    @app_commands.autocomplete(land=_land_autocomplete)
     @_staff_check()
     async def verifieer(
         self,
@@ -1654,12 +1771,32 @@ class VerificationCog(commands.Cog, name="verification"):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        if type == "embassy" and not (land and land.strip()):
-            await interaction.followup.send(
-                "❌ Kies `land:` — verplicht bij het type Ambassade.",
-                ephemeral=True,
+        if type == "embassy":
+            if not (land and land.strip()):
+                await interaction.followup.send(
+                    "❌ Kies `land:` — verplicht bij het type Ambassade.",
+                    ephemeral=True,
+                )
+                return
+            # Autocomplete only suggests — it doesn't stop free text being
+            # sent, so this is the actual enforcement: only an exact (case-
+            # insensitive) match against the live in-game country list is
+            # accepted. Same typo-guard as the public embassy button, and
+            # normalizes the casing to the canonical name so e.g. "tunisia"
+            # can't create a second, differently-cased ambassador role next
+            # to an existing "Tunisia" one.
+            known_names = await _known_country_names()
+            matched = next(
+                (n for n in known_names if n.lower() == land.strip().lower()), None
             )
-            return
+            if not matched:
+                await interaction.followup.send(
+                    f"❌ `{land.strip()}` is geen bekend land in het spel. "
+                    "Kies een van de voorgestelde landen uit de lijst.",
+                    ephemeral=True,
+                )
+                return
+            land = matched
 
         warera_id = _extract_warera_id(warera_url)
         if not warera_id:

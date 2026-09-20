@@ -1,4 +1,4 @@
-"""Database mixin for ``company_census`` / ``company_census_runs``.
+"""Database mixin for ``company_census`` / ``company_census_runs`` / ``region_snapshots``.
 
 An hourly census of every company in the game, bucketed by the country that
 currently controls the region the company sits in, and by the item it produces.
@@ -14,6 +14,12 @@ WarEra API.
 ``company.getById`` responses (the owner ID was previously discarded), so it is
 likewise free.  It keeps only the newest sweep — see
 :meth:`CompanyCensusMixin.save_company_owners`.
+
+``region_snapshots`` maps region id -> name/code/controlling country, from the
+same ``region.getRegionsObject`` call already made to resolve each company's
+country — see :meth:`CompanyCensusMixin.save_region_snapshots`. Paired with
+the ``region_id`` column on ``company_owner_map`` (services/db/company_tax.py),
+this is what lets ``/fabrieken`` break a country down by region by name.
 """
 
 from __future__ import annotations
@@ -153,6 +159,36 @@ class CompanyCensusMixin:
         )
         await self._conn.execute(
             "DELETE FROM company_owners WHERE captured_at != ?", (captured_at,)
+        )
+        await self._conn.commit()
+        return len(payload)
+
+    async def save_region_snapshots(
+        self, rows: Iterable[tuple[str, str, str, str]], updated_at: str
+    ) -> int:
+        """Upsert ``(region_id, code, name, country_id)`` rows.
+
+        Built from the same ``region.getRegionsObject`` response the census
+        phase already fetches to resolve each company's controlling country
+        — this just also keeps the name/code fields that call already
+        returns, so /fabrieken's per-region breakdown costs no extra API
+        calls. Every region is written, not just ones with companies.
+        """
+        payload = [
+            (str(rid), str(code) if code else None, str(name) if name else None,
+             str(country_id) if country_id else None, updated_at)
+            for rid, code, name, country_id in rows
+            if rid
+        ]
+        if not payload:
+            return 0
+        await self._conn.executemany(
+            "INSERT INTO region_snapshots (region_id, code, name, country_id, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(region_id) DO UPDATE SET "
+            "  code = excluded.code, name = excluded.name, "
+            "  country_id = excluded.country_id, updated_at = excluded.updated_at",
+            payload,
         )
         await self._conn.commit()
         return len(payload)
