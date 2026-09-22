@@ -3,12 +3,30 @@ set -e
 
 cd /home/warera/live/wareraNL-bot
 
-# Preserve live-edited template files that are managed by bot commands
-cp templates/mus.json /tmp/mus.json.bak 2>/dev/null || true
-cp templates/roles.json /tmp/roles.json.bak 2>/dev/null || true
+if [ -z "${DEPLOY_REEXEC:-}" ]; then
+    # Preserve live-edited template files that are managed by bot commands.
+    # Must happen here, before git reset below overwrites them on disk —
+    # NOT after the re-exec, or this would back up the already-reset (git)
+    # version instead of the live one, silently discarding it.
+    cp templates/mus.json /tmp/mus.json.bak 2>/dev/null || true
+    cp templates/roles.json /tmp/roles.json.bak 2>/dev/null || true
 
-git fetch origin main
-git reset --hard origin/main
+    git fetch origin main
+    git reset --hard origin/main
+
+    # Re-exec with the freshly-pulled version of this script — without this,
+    # an edit to deploy.sh only takes effect on the NEXT deploy after this
+    # one: bash has already read the OLD content of this file into memory
+    # by the time `git reset --hard` above updates it on disk, so the rest
+    # of THIS run would otherwise keep executing stale logic regardless of
+    # what git just pulled (confirmed live: a fix added to the datafetcher
+    # block below only started working on the deploy after the one that
+    # pulled it). DEPLOY_REEXEC guards this whole block so the re-exec'd
+    # process doesn't back up/fetch/reset a second time — it jumps straight
+    # to restoring the backups below and running the fresh rest of the script.
+    export DEPLOY_REEXEC=1
+    exec "$0" "$@"
+fi
 
 # Restore live-edited mus.json (bot commands write MU data to this file)
 cp /tmp/mus.json.bak templates/mus.json 2>/dev/null || true
