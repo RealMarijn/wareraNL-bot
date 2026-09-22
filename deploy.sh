@@ -68,11 +68,26 @@ sudo systemctl --no-pager --full status wareranl-bot
 # Deliberately placed AFTER the bot/web restart above, not before: this repo
 # has no SSH access to this server outside of this script, so the unit file
 # and its enable/restart have to be provisioned here too, on every deploy.
-# If this server's passwordless sudo doesn't cover writing unit files /
-# daemon-reload / enable (only "systemctl restart/status" on the two
-# services above is proven to work), this block fails loudly on its own —
-# but the bot/web restart above has already completed by then either way.
+#
+# Confirmed live: this server's passwordless sudo does NOT cover writing unit
+# files / daemon-reload / enable (only "systemctl restart/status" on the two
+# services above is proven to work) — `sudo tee ...` below fails with
+# "sudo: a password is required". So this whole block is wrapped to fail
+# SOFT (warn, exit 0) rather than aborting the job — the bot/web restart
+# above has already completed by the time this runs either way, and a
+# missing data-fetcher shouldn't make every future deploy show as failed.
+#
+# One-time fix (needs someone with real server access — this repo/CI can't
+# do it): either (a) they run the tee + systemctl commands below manually,
+# once, via their own sudo, then add a NOPASSWD sudoers line for
+# "systemctl restart/status wareranl-datafetcher" (same pattern as the two
+# services above) so this block succeeds on its own from then on, or
+# (b) broaden this SSH user's sudoers to also cover
+# "tee /etc/systemd/system/wareranl-datafetcher.service", "systemctl
+# daemon-reload" and "systemctl enable wareranl-datafetcher", so this
+# whole block keeps itself up to date automatically on every deploy.
 echo "── Provisioning wareranl-datafetcher service ──"
+set +e
 sudo tee /etc/systemd/system/wareranl-datafetcher.service > /dev/null <<UNIT
 [Unit]
 Description=WarEra NL - all-countries data fetcher
@@ -91,7 +106,20 @@ User=$(whoami)
 [Install]
 WantedBy=multi-user.target
 UNIT
-sudo systemctl daemon-reload
-sudo systemctl enable wareranl-datafetcher
-sudo systemctl restart wareranl-datafetcher
-sudo systemctl --no-pager --full status wareranl-datafetcher
+tee_status=$?
+provision_status=1
+if [[ "$tee_status" -eq 0 ]]; then
+    sudo systemctl daemon-reload \
+        && sudo systemctl enable wareranl-datafetcher \
+        && sudo systemctl restart wareranl-datafetcher \
+        && sudo systemctl --no-pager --full status wareranl-datafetcher
+    provision_status=$?
+fi
+set -e
+
+if [[ "$tee_status" -ne 0 || "$provision_status" -ne 0 ]]; then
+    echo "⚠️  Could not provision wareranl-datafetcher — sudo declined a password prompt." >&2
+    echo "   Needs a one-time manual setup by someone with real server access; see the" >&2
+    echo "   comment above this block in deploy.sh for the exact steps." >&2
+    echo "   (The bot/web restart above already succeeded regardless.)" >&2
+fi

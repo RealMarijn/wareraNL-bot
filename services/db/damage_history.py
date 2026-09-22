@@ -346,6 +346,65 @@ class DamageHistoryMixin:
                 })
         return rows
 
+    async def get_mu_damage_for_week(
+        self, mu_ids: list[str], week_start: str
+    ) -> dict[str, float]:
+        """Return {mu_id: summed_weekly_damage} for the given MUs in one game week.
+
+        Reads citizen_weekly_damage_history — hourly snapshots of WarEra's own
+        per-player weeklyUserDamages ranking — rather than reconstructing from
+        battle_mu_hits. Battle-level reconstruction buckets a battle's ENTIRE
+        damage under whichever week it started in (battle_created_at), so any
+        battle spanning the week boundary (common — battles often run for
+        days) has damage dealt during the target week misattributed entirely
+        to the previous week instead. Confirmed live: for one MU this
+        undercounted a week's total by ~40% (67M vs the ~111M this query
+        returns, matching the live weekly ranking within ~3%) — three battles
+        that started the day before the boundary but kept dealing damage
+        into the target week accounted for a third of the gap on their own.
+        """
+        if not mu_ids:
+            return {}
+        placeholders = ",".join("?" for _ in mu_ids)
+        result: dict[str, float] = {}
+        async with self._conn.execute(
+            f"""
+            SELECT mu_id, SUM(weekly_damage)
+              FROM citizen_weekly_damage_history
+             WHERE mu_id IN ({placeholders}) AND week_start = ?
+             GROUP BY mu_id
+            """,
+            (*mu_ids, week_start),
+        ) as cur:
+            async for row in cur:
+                result[str(row[0])] = float(row[1] or 0.0)
+        return result
+
+    async def get_player_damage_for_week(
+        self, user_ids: list[str], week_start: str
+    ) -> dict[str, tuple[str, float]]:
+        """Return {user_id: (citizen_name, weekly_damage)} for the given players in one game week.
+
+        Same citizen_weekly_damage_history source as get_mu_damage_for_week —
+        see that method's docstring for why this replaced a battle_hits-based
+        reconstruction.
+        """
+        if not user_ids:
+            return {}
+        placeholders = ",".join("?" for _ in user_ids)
+        result: dict[str, tuple[str, float]] = {}
+        async with self._conn.execute(
+            f"""
+            SELECT user_id, COALESCE(citizen_name, user_id), weekly_damage
+              FROM citizen_weekly_damage_history
+             WHERE user_id IN ({placeholders}) AND week_start = ?
+            """,
+            (*user_ids, week_start),
+        ) as cur:
+            async for row in cur:
+                result[str(row[0])] = (str(row[1]), float(row[2] or 0.0))
+        return result
+
     async def get_country_weekly_history(
         self, country_id: str, limit: int = 12
     ) -> list[dict]:

@@ -1104,3 +1104,61 @@ CREATE TABLE IF NOT EXISTS intel_feed_items (
     pub_date    TEXT NOT NULL,  -- ISO-8601 UTC, from the feed's own <pubDate>
     fetched_at  TEXT NOT NULL
 );
+
+-- ── Mercenary contract tracking ─────────────────────────────────────────────
+-- Populated by rijksoverheid_web/app/services/mercenary_tracker.py.
+--
+-- mercenaryContractAuction.getPaginatedAuctions only ever exposes a rolling
+-- window of the ~50 most-recent contracts system-wide (its `page` param is a
+-- server-side no-op — confirmed live, every page returns the same top-50),
+-- so this table can only ever be built forward from whenever the poller
+-- first runs. There is no way to backfill contracts from before that.
+--
+-- battleRanking.getRanking (type=mu) returns ONE cumulative running damage
+-- total per (mu, battle, side) — it does not reset per contract. So a MU's
+-- damage *for this specific contract* is tracked as a delta:
+--   baseline_damage       = that cumulative total at the moment this
+--                            contract was first observed (mu's own prior
+--                            contract on the same battle/side if we have
+--                            one, else a fresh live reading)
+--   last_seen_cumulative  = the most recent cumulative reading
+--   completed_damage      = last_seen_cumulative - baseline_damage, frozen
+--                            the first time it reaches minimum_damage
+CREATE TABLE IF NOT EXISTS mercenary_contracts (
+    auction_id         TEXT PRIMARY KEY,
+    mu_id              TEXT NOT NULL,
+    battle_id          TEXT NOT NULL,
+    for_country        TEXT,
+    for_country_side   TEXT NOT NULL,   -- 'attacker' | 'defender' — the side the MU fights on
+    minimum_damage     REAL NOT NULL,
+    budget             REAL,            -- payout at the moment we recorded the contract
+    current_per_k      REAL,
+    professionals_only INTEGER,
+    created_at         TEXT,            -- auction createdAt
+    expires_at         TEXT,            -- auction expiresAt (bidding-window end, not completion deadline)
+    bid_at             TEXT,            -- winning bid's bidAt
+    baseline_damage    REAL NOT NULL DEFAULT 0,
+    last_seen_cumulative REAL,
+    last_checked_at    TEXT,
+    completed_damage   REAL,            -- NULL until minimum_damage is reached
+    completed_at       TEXT,            -- NULL until minimum_damage is reached
+    tracking_ended_at  TEXT,            -- set when we stop polling without ever completing (battle ended / timed out)
+    first_seen_at      TEXT NOT NULL    -- when our own poller first recorded this row
+);
+CREATE INDEX IF NOT EXISTS idx_mercenary_contracts_mu ON mercenary_contracts(mu_id);
+CREATE INDEX IF NOT EXISTS idx_mercenary_contracts_pending
+    ON mercenary_contracts(battle_id, for_country_side)
+    WHERE completed_at IS NULL AND tracking_ended_at IS NULL;
+
+-- mercenary_mu_agg: lifetime per-MU rollup that survives pruning of the
+-- detail rows above (see fold_old_mercenary_contracts in
+-- services/db/mercenary_contracts.py) — retention trims mercenary_contracts
+-- to a recent window, but the running totals here are kept forever.
+CREATE TABLE IF NOT EXISTS mercenary_mu_agg (
+    mu_id                     TEXT PRIMARY KEY,
+    contracts_count           INTEGER NOT NULL DEFAULT 0,
+    completed_count           INTEGER NOT NULL DEFAULT 0,
+    total_money               REAL NOT NULL DEFAULT 0,
+    total_damage              REAL NOT NULL DEFAULT 0,
+    total_completion_seconds  REAL NOT NULL DEFAULT 0
+);
