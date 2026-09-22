@@ -10,12 +10,14 @@ from pathlib import Path
 
 import aiosqlite
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 from cogs.tasks._base import TaskCogBase
 from cogs.tasks.war_guild_divisions import DIVISION_MUS
 from services.country_utils import country_id as cid_of
 from services.country_utils import extract_country_list
+from utils.checks import has_privileged_role
 
 logger = logging.getLogger("discord_bot")
 
@@ -444,10 +446,21 @@ class CitizenTasks(TaskCogBase, name="citizen_tasks"):
         self,
         country_id: str,
         country_name: str,
-    ) -> None:
-        """Sync Discord nicknames to latest citizen names for mapped users."""
+    ) -> dict[str, int]:
+        """Sync Discord nicknames to latest citizen names for mapped users.
+
+        Returns a stats dict so callers (including the manual /syncnicknames
+        command) can tell WHERE the pipeline came up empty, rather than just
+        "nothing updated" — citizens/links_checked/matched narrow down
+        whether the gap is in citizen_levels, identity_links, or the actual
+        Discord edit.
+        """
+        stats = {
+            "citizens": 0, "links_checked": 0, "matched": 0,
+            "updated": 0, "skipped": 0, "failed": 0,
+        }
         if not self._db:
-            return
+            return stats
 
         try:
             citizens = await self._db.get_nl_citizen_ids(country_id)
@@ -456,10 +469,11 @@ class CitizenTasks(TaskCogBase, name="citizen_tasks"):
                 "citizen_refresh: failed loading citizens for nickname sync (%s)",
                 country_name,
             )
-            return
+            return stats
 
+        stats["citizens"] = len(citizens)
         if not citizens:
-            return
+            return stats
 
         name_by_ingame = {
             str(user_id): str(citizen_name).strip()
@@ -467,11 +481,7 @@ class CitizenTasks(TaskCogBase, name="citizen_tasks"):
             if str(citizen_name).strip()
         }
         if not name_by_ingame:
-            return
-
-        updated = 0
-        skipped = 0
-        failed = 0
+            return stats
 
         for guild in self.bot.guilds:
             try:
@@ -482,12 +492,14 @@ class CitizenTasks(TaskCogBase, name="citizen_tasks"):
                     guild.id,
                 )
                 continue
+            stats["links_checked"] += len(links)
 
             for link in links:
                 in_game_user_id = str(link.get("in_game_user_id") or "").strip()
                 target_nick = name_by_ingame.get(in_game_user_id)
                 if not target_nick:
                     continue
+                stats["matched"] += 1
 
                 target_nick = target_nick[:32]
                 if not target_nick:
@@ -507,7 +519,7 @@ class CitizenTasks(TaskCogBase, name="citizen_tasks"):
 
                 current = member.nick or member.name
                 if current == target_nick:
-                    skipped += 1
+                    stats["skipped"] += 1
                     continue
 
                 try:
@@ -515,16 +527,71 @@ class CitizenTasks(TaskCogBase, name="citizen_tasks"):
                         nick=target_nick,
                         reason=f"Sync met WarEra citizen naam ({country_name})",
                     )
-                    updated += 1
+                    stats["updated"] += 1
                 except Exception:
-                    failed += 1
+                    stats["failed"] += 1
 
         logger.info(
-            "citizen_refresh: nickname sync %s finished (updated=%d skipped=%d failed=%d)",
+            "citizen_refresh: nickname sync %s finished (citizens=%d links_checked=%d "
+            "matched=%d updated=%d skipped=%d failed=%d)",
             country_name,
-            updated,
-            skipped,
-            failed,
+            stats["citizens"], stats["links_checked"], stats["matched"],
+            stats["updated"], stats["skipped"], stats["failed"],
+        )
+        return stats
+
+    @app_commands.command(
+        name="syncnicknames",
+        description="Ververs direct alle NL Discord-bijnamen naar de laatste WarEra-naam, met diagnose.",
+    )
+    @has_privileged_role()
+    async def cmd_sync_nicknames(self, interaction: discord.Interaction) -> None:
+        """Manual trigger for the NL nickname sync that citizen_refresh runs
+        hourly — added because that automatic sync's only visibility was a
+        log line, unreachable to anyone without server access. Reports the
+        same stats the log line has, straight into Discord, so a stuck sync
+        can be told apart from "nothing to sync" without SSH: e.g. citizens=0
+        means the NL citizen cache itself is stale/empty; links_checked=0
+        means identity_links has nothing for this guild (so nobody can be
+        matched no matter how fresh the citizen cache is); matched=0 despite
+        real links means in_game_user_id values aren't lining up with
+        citizen_levels; high failed means Discord is rejecting the edits
+        (role hierarchy, permissions).
+        """
+        nl_country_id = self.config.get("nl_country_id")
+        if not nl_country_id or not self._db or not self._citizen_cache:
+            await interaction.response.send_message(
+                "❌ Services niet beschikbaar.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            "🔄 WarEra-namen verversen en bijnamen synchroniseren...", ephemeral=True
+        )
+        try:
+            await self._citizen_cache.refresh_country(nl_country_id, "Netherlands")
+        except Exception as exc:
+            logger.exception("syncnicknames: citizen refresh failed")
+            await interaction.followup.send(
+                f"❌ Kon WarEra-namen niet verversen: {exc}", ephemeral=True
+            )
+            return
+        try:
+            stats = await self._sync_discord_nicknames_for_country(
+                nl_country_id, "Netherlands"
+            )
+        except Exception as exc:
+            logger.exception("syncnicknames: nickname sync failed")
+            await interaction.followup.send(f"❌ Fout: {exc}", ephemeral=True)
+            return
+        await interaction.followup.send(
+            "✅ Bijnamen-sync klaar.\n"
+            f"NL burgers in cache: **{stats['citizens']}**\n"
+            f"Identity-links gecontroleerd: **{stats['links_checked']}**\n"
+            f"Gematcht (link + bekende WarEra-naam): **{stats['matched']}**\n"
+            f"Bijgewerkt: **{stats['updated']}**  •  "
+            f"Al correct: **{stats['skipped']}**  •  "
+            f"Mislukt: **{stats['failed']}**",
+            ephemeral=True,
         )
 
     # ------------------------------------------------------------------ #

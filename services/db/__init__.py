@@ -28,6 +28,7 @@ Mixin                Tables
 :mod:`.trades`          ``item_trades``
 :mod:`.item_prices`     ``item_price_history``
 :mod:`.extension_auth`  ``extension_sessions``
+:mod:`.mercenary_contracts` ``mercenary_contracts``, ``mercenary_mu_agg``
 ===================  ========================================
 Usage::
 
@@ -62,6 +63,7 @@ from .identities import IdentityLinksMixin
 from .item_prices import ItemPricesMixin
 from .level5_notified import Level5NotifiedMixin
 from .luck import LuckMixin
+from .mercenary_contracts import MercenaryContractsMixin
 from .mu_subscriptions import MuSubscriptionsMixin
 from .mus_registry import MusRegistryMixin
 from .pill_reminders import PillRemindersMixin
@@ -80,6 +82,7 @@ from .wealth import WealthMixin
 
 class Database(
     MuSubscriptionsMixin,
+    MercenaryContractsMixin,
     EcoDonationsMixin,
     ExtensionAuthMixin,
     DailyDmgMixin,

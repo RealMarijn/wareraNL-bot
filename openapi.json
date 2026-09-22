@@ -2234,10 +2234,6 @@
                       "cancelled"
                     ]
                   },
-                  "muId": {
-                    "type": "string",
-                    "description": "Filter by MU (military unit) ID"
-                  },
                   "forCountry": {
                     "type": "string",
                     "description": "Filter by country ID (the country that posted the contract)"

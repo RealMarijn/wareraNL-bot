@@ -12,9 +12,8 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, timedelta
 from typing import TYPE_CHECKING, Optional
-from zoneinfo import ZoneInfo
 
 _UID_RE = re.compile(r'^[0-9a-f]{20,}$', re.ASCII)
 
@@ -32,28 +31,18 @@ from cogs.commands._base import CommandCogBase
 from cogs.tasks.mus import mus_path
 from cogs.tasks.war_guild_divisions import DIVISION_MUS
 from services.damage_calc import fmt_damage
+from services.game_time import fmt_week_range, game_week_start
 
-_TZ_NL = ZoneInfo("Europe/Amsterdam")
 
+def _last_week_start() -> str:
+    """Return the YYYY-MM-DD game-week start (Monday) for last week.
 
-def _nl_week_range(weeks_ago: int = 1) -> tuple[str, str]:
-    """Return (start_iso, end_iso) UTC strings for a past WarEra weekly damage window.
-
-    WarEra resets weekly damage on Monday 02:00 NL time.
-    weeks_ago=1 → last week's window (Mon 02:00 → Mon 02:00).
+    Must match citizen_weekly_damage_history.week_start exactly — that table
+    (and game_week_start()) bucket by the game week boundary (Monday 02:00
+    UTC, see services/game_time.py), not by NL-local time.
     """
-    now_nl = datetime.now(_TZ_NL)
-    days_since_monday = now_nl.weekday()  # Monday = 0
-    this_monday_nl = (now_nl - timedelta(days=days_since_monday)).replace(
-        hour=2, minute=0, second=0, microsecond=0
-    )
-    end_nl = this_monday_nl - timedelta(weeks=weeks_ago - 1)
-    start_nl = end_nl - timedelta(weeks=1)
-    fmt = "%Y-%m-%dT%H:%M:%S"
-    return (
-        start_nl.astimezone(timezone.utc).strftime(fmt),
-        end_nl.astimezone(timezone.utc).strftime(fmt),
-    )
+    current = date.fromisoformat(game_week_start())
+    return (current - timedelta(days=7)).isoformat()
 
 if TYPE_CHECKING:
     from bot import DiscordBot
@@ -336,10 +325,10 @@ class MudmgCog(CommandCogBase, name="mudmg"):
         grand_total = 0.0
 
         if last_week:
-            start_iso, end_iso = _nl_week_range(weeks_ago=1)
+            week_start = _last_week_start()
             mu_ids = [e["id"] for e in entries]
             try:
-                dmg_map = await self._db.get_mu_damage_in_range(mu_ids, start_iso, end_iso)
+                dmg_map = await self._db.get_mu_damage_for_week(mu_ids, week_start)
             except Exception as exc:
                 logger.warning("mudmg overview last_week: DB query failed: %s", exc)
                 await self._send_api_offline(ctx)
@@ -433,8 +422,7 @@ class MudmgCog(CommandCogBase, name="mudmg"):
 
         legend = "🟡 D1  •  🔵 D2  •  🟢 D3  •  🔴 D4  •  🟣 D5"
         if last_week:
-            start_iso, _ = _nl_week_range(weeks_ago=1)
-            week_label = datetime.fromisoformat(start_iso).strftime("week van %d-%m")
+            week_label = date.fromisoformat(_last_week_start()).strftime("week van %d-%m")
             sort_label = f"schade vorige week ({week_label})"
         else:
             sort_label = "totale schade" if sort_by_total else "wekelijkse schade"
@@ -515,9 +503,9 @@ class MudmgCog(CommandCogBase, name="mudmg"):
         name_map: dict[str, str] = {}
         if self._db and members:
             if last_week:
-                start_iso, end_iso = _nl_week_range(weeks_ago=1)
+                week_start = _last_week_start()
                 try:
-                    weekly_map = await self._db.get_player_damage_in_range(members, start_iso, end_iso)
+                    weekly_map = await self._db.get_player_damage_for_week(members, week_start)
                 except Exception as exc:
                     logger.warning("mudmg detail last_week: DB lookup failed: %s", exc)
             else:
@@ -591,8 +579,7 @@ class MudmgCog(CommandCogBase, name="mudmg"):
         members_total = len(members)
 
         if last_week:
-            start_iso, _ = _nl_week_range(weeks_ago=1)
-            week_label = datetime.fromisoformat(start_iso).strftime("week van %d-%m")
+            week_label = date.fromisoformat(_last_week_start()).strftime("week van %d-%m")
             title_suffix = f"— Ledenschade ({week_label})"
             footer_parts = [f"Schade uit database ({week_label})"]
         else:
