@@ -9,6 +9,7 @@ rijksoverheid_web/app/services/mercenary_tracker.py.
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import aiosqlite
@@ -33,6 +34,15 @@ class MercenaryContractsMixin:
             auction_ids,
         ) as cur:
             return {row[0] async for row in cur}
+
+    async def get_earliest_mercenary_contract_seen_at(self) -> Optional[str]:
+        """Earliest first_seen_at on file — used once to seed the
+        "tracking since" poll_state value from already-existing data."""
+        async with self._conn.execute(
+            "SELECT MIN(first_seen_at) FROM mercenary_contracts"
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row and row[0] else None
 
     async def get_last_cumulative_for_mu_battle_side(
         self, mu_id: str, battle_id: str, side: str
@@ -86,6 +96,111 @@ class MercenaryContractsMixin:
                 baseline_damage, now_iso, now_iso,
             ),
         )
+
+    # ------------------------------------------------------------------ #
+    # MU membership cache (for per-member equipment tracking)
+    # ------------------------------------------------------------------ #
+
+    async def get_cached_mu_members(
+        self, mu_id: str, max_age_iso: str
+    ) -> Optional[list[str]]:
+        """Cached members list for *mu_id*, or None if missing/older than
+        *max_age_iso* (an ISO cutoff timestamp — caller compares cached_at
+        against it rather than this method doing its own clock math)."""
+        async with self._conn.execute(
+            "SELECT members_json, cached_at FROM mu_membership_cache WHERE mu_id = ?",
+            (mu_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if not row or row[1] < max_age_iso:
+            return None
+        try:
+            return json.loads(row[0])
+        except (ValueError, TypeError):
+            return None
+
+    async def set_cached_mu_members(
+        self, mu_id: str, members: list[str], now_iso: str
+    ) -> None:
+        await self._conn.execute(
+            """
+            INSERT INTO mu_membership_cache (mu_id, members_json, cached_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(mu_id) DO UPDATE SET
+                members_json = excluded.members_json, cached_at = excluded.cached_at
+            """,
+            (mu_id, json.dumps(members), now_iso),
+        )
+        await self._conn.commit()
+
+    # ------------------------------------------------------------------ #
+    # Per-member damage baselines + contributions
+    # ------------------------------------------------------------------ #
+
+    async def set_contract_member_baselines(
+        self, auction_id: str, baselines: dict[str, float]
+    ) -> None:
+        for user_id, baseline in baselines.items():
+            await self._conn.execute(
+                """
+                INSERT OR IGNORE INTO mercenary_contract_member_baselines
+                    (auction_id, user_id, baseline_damage)
+                VALUES (?, ?, ?)
+                """,
+                (auction_id, user_id, baseline),
+            )
+        await self._conn.commit()
+
+    async def get_contract_member_baselines(self, auction_id: str) -> dict[str, float]:
+        result: dict[str, float] = {}
+        async with self._conn.execute(
+            "SELECT user_id, baseline_damage FROM mercenary_contract_member_baselines WHERE auction_id = ?",
+            (auction_id,),
+        ) as cur:
+            async for row in cur:
+                result[row[0]] = float(row[1] or 0)
+        return result
+
+    async def delete_contract_member_baselines(self, auction_id: str) -> None:
+        await self._conn.execute(
+            "DELETE FROM mercenary_contract_member_baselines WHERE auction_id = ?",
+            (auction_id,),
+        )
+        await self._conn.commit()
+
+    async def insert_contract_members(
+        self, auction_id: str, rows: list[tuple[str, float, Optional[float]]], now_iso: str
+    ) -> None:
+        """rows: [(user_id, damage, avg_rarity_or_None), ...]"""
+        for user_id, damage, avg_rarity in rows:
+            await self._conn.execute(
+                """
+                INSERT OR REPLACE INTO mercenary_contract_members
+                    (auction_id, user_id, damage, avg_rarity, recorded_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (auction_id, user_id, damage, avg_rarity, now_iso),
+            )
+        await self._conn.commit()
+
+    async def get_contract_members(self, auction_id: str) -> list[dict]:
+        rows: list[dict] = []
+        async with self._conn.execute(
+            """
+            SELECT user_id, damage, avg_rarity
+              FROM mercenary_contract_members
+             WHERE auction_id = ?
+             ORDER BY damage DESC
+            """,
+            (auction_id,),
+        ) as cur:
+            async for row in cur:
+                rows.append({
+                    "user_id": row[0],
+                    "damage": float(row[1] or 0),
+                    "avg_rarity": float(row[2]) if row[2] is not None else None,
+                })
+        return rows
 
     # ------------------------------------------------------------------ #
     # Progress tracking
@@ -192,46 +307,76 @@ class MercenaryContractsMixin:
 
     async def fold_old_mercenary_contracts(self, cutoff_iso: str) -> int:
         """Fold finalized contracts older than *cutoff_iso* into the
-        mercenary_mu_agg rollup, then delete the detail rows. Returns the
-        number of rows folded. Only finalized (completed or abandoned)
+        mercenary_mu_agg rollup, then delete the detail rows (including
+        their mercenary_contract_members rows). Returns the number of
+        contract rows folded. Only finalized (completed or abandoned)
         contracts are eligible — in-progress ones are never pruned."""
         async with self._conn.execute(
             """
-            SELECT mu_id,
+            SELECT mc.mu_id,
                    COUNT(*)                                            AS n,
-                   COUNT(completed_at)                                 AS n_completed,
-                   COALESCE(SUM(budget), 0)                            AS money,
-                   COALESCE(SUM(CASE WHEN completed_at IS NOT NULL
-                                      THEN completed_damage ELSE 0 END), 0) AS damage,
-                   COALESCE(SUM(CASE WHEN completed_at IS NOT NULL
-                                      THEN (julianday(completed_at) - julianday(created_at)) * 86400.0
-                                      ELSE 0 END), 0)                  AS completion_seconds
-              FROM mercenary_contracts
-             WHERE (completed_at IS NOT NULL OR tracking_ended_at IS NOT NULL)
-               AND COALESCE(completed_at, tracking_ended_at) < ?
-             GROUP BY mu_id
+                   COUNT(mc.completed_at)                              AS n_completed,
+                   COALESCE(SUM(mc.budget), 0)                         AS money,
+                   COALESCE(SUM(CASE WHEN mc.completed_at IS NOT NULL
+                                      THEN mc.completed_damage ELSE 0 END), 0) AS damage,
+                   COALESCE(SUM(CASE WHEN mc.completed_at IS NOT NULL
+                                      THEN (julianday(mc.completed_at) - julianday(mc.created_at)) * 86400.0
+                                      ELSE 0 END), 0)                  AS completion_seconds,
+                   COALESCE((
+                       SELECT SUM(mcm.damage * mcm.avg_rarity)
+                         FROM mercenary_contract_members mcm
+                         JOIN mercenary_contracts mc2 ON mc2.auction_id = mcm.auction_id
+                        WHERE mc2.mu_id = mc.mu_id AND mcm.avg_rarity IS NOT NULL
+                          AND (mc2.completed_at IS NOT NULL OR mc2.tracking_ended_at IS NOT NULL)
+                          AND COALESCE(mc2.completed_at, mc2.tracking_ended_at) < ?
+                   ), 0)                                               AS rarity_weighted,
+                   COALESCE((
+                       SELECT SUM(mcm.damage)
+                         FROM mercenary_contract_members mcm
+                         JOIN mercenary_contracts mc2 ON mc2.auction_id = mcm.auction_id
+                        WHERE mc2.mu_id = mc.mu_id AND mcm.avg_rarity IS NOT NULL
+                          AND (mc2.completed_at IS NOT NULL OR mc2.tracking_ended_at IS NOT NULL)
+                          AND COALESCE(mc2.completed_at, mc2.tracking_ended_at) < ?
+                   ), 0)                                               AS rarity_weight
+              FROM mercenary_contracts mc
+             WHERE (mc.completed_at IS NOT NULL OR mc.tracking_ended_at IS NOT NULL)
+               AND COALESCE(mc.completed_at, mc.tracking_ended_at) < ?
+             GROUP BY mc.mu_id
             """,
-            (cutoff_iso,),
+            (cutoff_iso, cutoff_iso, cutoff_iso),
         ) as cur:
             agg_rows = [row async for row in cur]
 
-        for mu_id, n, n_completed, money, damage, completion_seconds in agg_rows:
+        for mu_id, n, n_completed, money, damage, completion_seconds, rarity_weighted, rarity_weight in agg_rows:
             await self._conn.execute(
                 """
                 INSERT INTO mercenary_mu_agg
                     (mu_id, contracts_count, completed_count, total_money,
-                     total_damage, total_completion_seconds)
-                VALUES (?, ?, ?, ?, ?, ?)
+                     total_damage, total_completion_seconds, total_rarity_weighted, total_rarity_weight)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(mu_id) DO UPDATE SET
                     contracts_count = contracts_count + excluded.contracts_count,
                     completed_count = completed_count + excluded.completed_count,
                     total_money = total_money + excluded.total_money,
                     total_damage = total_damage + excluded.total_damage,
-                    total_completion_seconds = total_completion_seconds + excluded.total_completion_seconds
+                    total_completion_seconds = total_completion_seconds + excluded.total_completion_seconds,
+                    total_rarity_weighted = total_rarity_weighted + excluded.total_rarity_weighted,
+                    total_rarity_weight = total_rarity_weight + excluded.total_rarity_weight
                 """,
-                (mu_id, n, n_completed, money, damage, completion_seconds),
+                (mu_id, n, n_completed, money, damage, completion_seconds, rarity_weighted, rarity_weight),
             )
 
+        await self._conn.execute(
+            """
+            DELETE FROM mercenary_contract_members
+             WHERE auction_id IN (
+                 SELECT auction_id FROM mercenary_contracts
+                  WHERE (completed_at IS NOT NULL OR tracking_ended_at IS NOT NULL)
+                    AND COALESCE(completed_at, tracking_ended_at) < ?
+             )
+            """,
+            (cutoff_iso,),
+        )
         await self._conn.execute(
             """
             DELETE FROM mercenary_contracts
@@ -255,7 +400,10 @@ class MercenaryContractsMixin:
 
         Returns dicts: mu_id, mu_name, avatar_url, contracts_count,
         completed_count, total_money, avg_damage, avg_completion_seconds,
-        avg_rate_per_k (money / (avg_damage/1000), only when both are known).
+        avg_rate_per_k (money / (avg_damage/1000), only when both are known),
+        avg_gear_rarity (damage-weighted average equipment tier across every
+        contributing member on every completed contract, 1-6, or None if no
+        member/equipment data has been captured yet).
         """
         rows: list[dict] = []
         async with self._conn.execute(
@@ -274,22 +422,36 @@ class MercenaryContractsMixin:
                  WHERE completed_at IS NOT NULL OR tracking_ended_at IS NOT NULL
                  GROUP BY mu_id
             ),
+            live_rarity AS (
+                SELECT mc.mu_id,
+                       SUM(mcm.damage * mcm.avg_rarity) AS rarity_weighted,
+                       SUM(mcm.damage)                  AS rarity_weight
+                  FROM mercenary_contract_members mcm
+                  JOIN mercenary_contracts mc ON mc.auction_id = mcm.auction_id
+                 WHERE mcm.avg_rarity IS NOT NULL
+                 GROUP BY mc.mu_id
+            ),
             agg AS (
                 SELECT mu_id, contracts_count, completed_count, total_money,
-                       total_damage, total_completion_seconds
+                       total_damage, total_completion_seconds, total_rarity_weighted, total_rarity_weight
                   FROM mercenary_mu_agg
             ),
             combined AS (
                 SELECT
-                    COALESCE(live.mu_id, agg.mu_id)                                      AS mu_id,
+                    COALESCE(live.mu_id, agg.mu_id, live_rarity.mu_id)                    AS mu_id,
                     COALESCE(live.n, 0) + COALESCE(agg.contracts_count, 0)                AS contracts_count,
                     COALESCE(live.n_completed, 0) + COALESCE(agg.completed_count, 0)      AS completed_count,
                     COALESCE(live.money, 0) + COALESCE(agg.total_money, 0)                AS total_money,
                     COALESCE(live.damage, 0) + COALESCE(agg.total_damage, 0)              AS total_damage,
                     COALESCE(live.completion_seconds, 0) + COALESCE(agg.total_completion_seconds, 0)
-                                                                                            AS total_completion_seconds
+                                                                                            AS total_completion_seconds,
+                    COALESCE(live_rarity.rarity_weighted, 0) + COALESCE(agg.total_rarity_weighted, 0)
+                                                                                            AS total_rarity_weighted,
+                    COALESCE(live_rarity.rarity_weight, 0) + COALESCE(agg.total_rarity_weight, 0)
+                                                                                            AS rarity_weight
                 FROM live
                 FULL OUTER JOIN agg ON agg.mu_id = live.mu_id
+                FULL OUTER JOIN live_rarity ON live_rarity.mu_id = COALESCE(live.mu_id, agg.mu_id)
             )
             SELECT combined.mu_id,
                    COALESCE(km.mu_name, combined.mu_id) AS mu_name,
@@ -298,7 +460,9 @@ class MercenaryContractsMixin:
                    combined.completed_count,
                    combined.total_money,
                    combined.total_damage,
-                   combined.total_completion_seconds
+                   combined.total_completion_seconds,
+                   combined.total_rarity_weighted,
+                   combined.rarity_weight
               FROM combined
               LEFT JOIN known_mus km ON km.mu_id = combined.mu_id
              WHERE combined.contracts_count >= ?
@@ -309,13 +473,18 @@ class MercenaryContractsMixin:
         ) as cur:
             async for row in cur:
                 (mu_id, mu_name, avatar_url, n, n_completed,
-                 money, damage, completion_seconds) = row
+                 money, damage, completion_seconds,
+                 total_rarity_weighted, rarity_weight) = row
                 n_completed = n_completed or 0
                 avg_damage = (damage / n_completed) if n_completed else None
                 avg_completion_s = (completion_seconds / n_completed) if n_completed else None
                 avg_rate_per_k = (
                     (money / n_completed) / (avg_damage / 1000.0)
                     if n_completed and avg_damage else None
+                )
+                avg_gear_rarity = (
+                    total_rarity_weighted / rarity_weight
+                    if rarity_weight and rarity_weight > 0 else None
                 )
                 rows.append({
                     "mu_id": mu_id,
@@ -327,23 +496,31 @@ class MercenaryContractsMixin:
                     "avg_damage": avg_damage,
                     "avg_completion_seconds": avg_completion_s,
                     "avg_rate_per_k": avg_rate_per_k,
+                    "avg_gear_rarity": avg_gear_rarity,
                 })
         return rows
 
     async def get_mercenary_contracts_for_mu(
         self, mu_id: str, limit: int = 100
     ) -> list[dict]:
-        """Recent (unpruned) contract rows for one MU, newest first."""
+        """Recent (unpruned) contract rows for one MU, newest first —
+        including each contract's own damage-weighted average gear rarity
+        from mercenary_contract_members, where any was captured."""
         rows: list[dict] = []
         async with self._conn.execute(
             """
-            SELECT auction_id, battle_id, for_country, for_country_side,
-                   minimum_damage, budget, current_per_k, created_at,
-                   baseline_damage, last_seen_cumulative, completed_damage,
-                   completed_at, tracking_ended_at
-              FROM mercenary_contracts
-             WHERE mu_id = ?
-             ORDER BY created_at DESC
+            SELECT mc.auction_id, mc.battle_id, mc.for_country, mc.for_country_side,
+                   mc.minimum_damage, mc.budget, mc.current_per_k, mc.created_at,
+                   mc.baseline_damage, mc.last_seen_cumulative, mc.completed_damage,
+                   mc.completed_at, mc.tracking_ended_at,
+                   (SELECT SUM(damage * avg_rarity) FROM mercenary_contract_members
+                     WHERE auction_id = mc.auction_id AND avg_rarity IS NOT NULL)
+                     / NULLIF((SELECT SUM(damage) FROM mercenary_contract_members
+                                WHERE auction_id = mc.auction_id AND avg_rarity IS NOT NULL), 0)
+                     AS avg_gear_rarity
+              FROM mercenary_contracts mc
+             WHERE mc.mu_id = ?
+             ORDER BY mc.created_at DESC
              LIMIT ?
             """,
             (mu_id, limit),
@@ -363,5 +540,6 @@ class MercenaryContractsMixin:
                     "completed_damage": float(row[10]) if row[10] is not None else None,
                     "completed_at": row[11],
                     "tracking_ended_at": row[12],
+                    "avg_gear_rarity": float(row[13]) if row[13] is not None else None,
                 })
         return rows

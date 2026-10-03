@@ -11,11 +11,15 @@
 #   role:<role id>     grants anyone holding that role in the configured
 #                       Discord server (EXTENSION_GUILD_ID, or ADMIN_GUILD_ID
 #                       if that's unset) access
-#   guild:<guild id>    grants anyone who is simply a MEMBER of a SECOND,
-#                       independent Discord server (EXTENSION_EXTRA_GUILD_ID)
-#                       — no specific role needed — access. Use this to
-#                       whitelist an entire community server wholesale,
-#                       alongside role:-based entries for a different server.
+#   guild:<guild id>    grants anyone who is simply a MEMBER of one of the
+#                       wholesale-whitelisted extra Discord servers
+#                       (EXTENSION_EXTRA_GUILD_ID / _2 / ... — see
+#                       Settings.extra_guilds in config.py) — no specific
+#                       role needed — access. Use this to whitelist an
+#                       entire community server wholesale, alongside
+#                       role:-based entries for a different server. The
+#                       guild id here must match one of those configured
+#                       servers, or the membership check never runs for it.
 #
 # How to find a Discord user/role/server ID: Discord settings -> Advanced ->
 # turn on Developer Mode, then right-click a name (Copy User ID), a role in

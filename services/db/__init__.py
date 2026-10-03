@@ -38,6 +38,7 @@ Usage::
     await db.close()
 """
 
+from .alliances_page import AlliancesPageMixin
 from .article_tips import ArticleTipsMixin
 from .base import DatabaseBase
 from .eco_donations import EcoDonationsMixin
@@ -81,6 +82,7 @@ from .wealth import WealthMixin
 
 
 class Database(
+    AlliancesPageMixin,
     MuSubscriptionsMixin,
     MercenaryContractsMixin,
     EcoDonationsMixin,

@@ -195,6 +195,11 @@ class DatabaseBase:
             # company_owner_map — region_id, so /fabrieken can break a country's
             # companies down by region (see region_snapshots for names).
             ("company_owner_map", "region_id TEXT"),
+            # mercenary_mu_agg — gear-rarity rollup, added after the table
+            # shipped (see services/mercenary_tracker.py's per-member
+            # equipment tracking).
+            ("mercenary_mu_agg", "total_rarity_weighted REAL NOT NULL DEFAULT 0"),
+            ("mercenary_mu_agg", "total_rarity_weight REAL NOT NULL DEFAULT 0"),
         ]
         for table, column_def in migrations:
             try:

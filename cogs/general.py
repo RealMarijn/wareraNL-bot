@@ -134,6 +134,20 @@ class General(commands.Cog, name="general"):
         """
         if message.author.bot:
             return
+
+        # Tagging MVC (176648226521350144) on the production guild → fixed reply.
+        if (
+            message.guild
+            and message.guild.id == 1401530718223335496
+            and any(u.id == 176648226521350144 for u in message.mentions)
+        ):
+            try:
+                await message.channel.send("MVC is op dit moment niet bereikbaar")
+            except discord.HTTPException as e:
+                self.bot.logger.error(
+                    f"Failed to send MVC-unreachable message for message {message.id}: {e}"
+                )
+
         content = message.content or ""
         # self.bot.logger.debug(f"Received message: {content} from {message.author} "
         # f"in {getattr(message.channel, 'id', 'DM')}")
