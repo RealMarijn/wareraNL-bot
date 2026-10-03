@@ -1160,5 +1160,46 @@ CREATE TABLE IF NOT EXISTS mercenary_mu_agg (
     completed_count           INTEGER NOT NULL DEFAULT 0,
     total_money               REAL NOT NULL DEFAULT 0,
     total_damage              REAL NOT NULL DEFAULT 0,
-    total_completion_seconds  REAL NOT NULL DEFAULT 0
+    total_completion_seconds  REAL NOT NULL DEFAULT 0,
+    total_rarity_weighted     REAL NOT NULL DEFAULT 0, -- SUM(member damage x their equipment's avg tier), over members whose equipment we captured
+    total_rarity_weight       REAL NOT NULL DEFAULT 0  -- SUM(member damage) for that same subset — the denominator; divide the two for the MU's damage-weighted average gear rarity
+);
+
+-- mercenary_contract_members: per-contract, per-user damage contributed and
+-- their equipment's average rarity tier at the moment the contract
+-- completed. damage here is a delta the same way mercenary_contracts'
+-- baseline/last_seen_cumulative is: this user's battleRanking(type=user)
+-- cumulative in that battle/side at completion, minus their own cumulative
+-- at the contract's start (mercenary_contract_member_baselines below) —
+-- battleRanking never gives a per-contract figure directly, same reason as
+-- the MU-level tracking.
+CREATE TABLE IF NOT EXISTS mercenary_contract_members (
+    auction_id  TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    damage      REAL NOT NULL,
+    avg_rarity  REAL,       -- NULL if their equipment couldn't be fetched
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (auction_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mercenary_contract_members_auction ON mercenary_contract_members(auction_id);
+
+-- mercenary_contract_member_baselines: each MU member's own cumulative
+-- battleRanking(type=user) damage in the contract's battle/side, captured
+-- once at contract discovery — the per-user equivalent of
+-- mercenary_contracts.baseline_damage. Deleted once the contract finishes
+-- (completed or abandoned) and its member deltas are computed.
+CREATE TABLE IF NOT EXISTS mercenary_contract_member_baselines (
+    auction_id       TEXT NOT NULL,
+    user_id          TEXT NOT NULL,
+    baseline_damage  REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (auction_id, user_id)
+);
+
+-- mu_membership_cache: mu.getById's members list, refreshed on a TTL — used
+-- to resolve which users belong to a mercenary contract's winning MU
+-- without a fresh API call on every contract (rosters don't change often).
+CREATE TABLE IF NOT EXISTS mu_membership_cache (
+    mu_id        TEXT PRIMARY KEY,
+    members_json TEXT NOT NULL,
+    cached_at    TEXT NOT NULL
 );
