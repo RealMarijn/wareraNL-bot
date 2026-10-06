@@ -109,6 +109,43 @@
         }
       }
     },
+    "/alliance.getByIds": {
+      "post": {
+        "tags": [
+          "alliance"
+        ],
+        "description": "Retrieves detailed information about multiple alliances by their IDs",
+        "summary": "Get alliances by IDs",
+        "operationId": "alliance.getByIds",
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "The unique identifiers of the alliances to retrieve"
+                  }
+                },
+                "required": [
+                  "ids"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
     "/article.getArticleById": {
       "post": {
         "tags": [
@@ -1861,6 +1898,79 @@
               "schema": {
                 "type": "object",
                 "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gameStat.getEquipmentAvgByCode": {
+      "post": {
+        "tags": [
+          "gameStat"
+        ],
+        "description": "Retrieves the average rolled stats for a given equipment item code",
+        "summary": "Get average equipment stats by item code",
+        "operationId": "gameStat.getEquipmentAvgByCode",
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "itemCode": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The equipment item code to get average rolled stats for",
+                    "enum": [
+                      "knife",
+                      "gun",
+                      "rifle",
+                      "sniper",
+                      "tank",
+                      "jet",
+                      "helmet1",
+                      "helmet2",
+                      "helmet3",
+                      "helmet4",
+                      "helmet5",
+                      "helmet6",
+                      "chest1",
+                      "chest2",
+                      "chest3",
+                      "chest4",
+                      "chest5",
+                      "chest6",
+                      "pants1",
+                      "pants2",
+                      "pants3",
+                      "pants4",
+                      "pants5",
+                      "pants6",
+                      "boots1",
+                      "boots2",
+                      "boots3",
+                      "boots4",
+                      "boots5",
+                      "boots6",
+                      "gloves1",
+                      "gloves2",
+                      "gloves3",
+                      "gloves4",
+                      "gloves5",
+                      "gloves6"
+                    ]
+                  }
+                },
+                "required": [
+                  "itemCode"
+                ],
                 "additionalProperties": false
               }
             }
