@@ -8,6 +8,8 @@ from typing import Optional
 
 import aiosqlite
 
+from .schema_version import SCHEMA_VERSION
+
 logger = logging.getLogger("services.db")
 
 
@@ -83,25 +85,38 @@ class DatabaseBase:
         # checkpoint the data-fetcher runs between sweeps.
         await self._conn.execute("PRAGMA wal_autocheckpoint=1000")
 
-        # Run main schema (all CREATE TABLE IF NOT EXISTS)
-        schema_path = Path("database/schema.sql")
-        with schema_path.open("r", encoding="utf-8") as f:
-            await self._conn.executescript(f.read())
-        await self._conn.commit()
+        # Schema setup below is a ~140-statement CREATE TABLE/INDEX pass that's
+        # a no-op after the first run — but each statement still needs the
+        # write lock, which this file's other process (bot.py's own init_db,
+        # same file) contends for too on every simultaneous restart. A single
+        # cheap PRAGMA user_version read lets an already-migrated DB skip all
+        # of it; bump SCHEMA_VERSION (services/db/schema_version.py) whenever
+        # schema.sql or _apply_migrations changes, to force exactly one re-run.
+        cur = await self._conn.execute("PRAGMA user_version")
+        row = await cur.fetchone()
+        current_version = row[0] if row else 0
 
-        # Apply incremental column additions (safe no-ops if already present)
-        await self._apply_migrations()
+        if current_version < SCHEMA_VERSION:
+            # Run main schema (all CREATE TABLE IF NOT EXISTS)
+            schema_path = Path("database/schema.sql")
+            with schema_path.open("r", encoding="utf-8") as f:
+                await self._conn.executescript(f.read())
+            await self._conn.commit()
 
-        # Indexes on columns added by the migrations above — must run after
-        # them, since CREATE TABLE IF NOT EXISTS above is a no-op on a
-        # database that already has the table (i.e. every existing
-        # deployment), so the column those migrations add doesn't exist yet
-        # when schema.sql itself runs.
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_company_owner_map_region "
-            "ON company_owner_map(country_id, region_id)"
-        )
-        await self._conn.commit()
+            # Apply incremental column additions (safe no-ops if already present)
+            await self._apply_migrations()
+
+            # Indexes on columns added by the migrations above — must run after
+            # them, since CREATE TABLE IF NOT EXISTS above is a no-op on a
+            # database that already has the table (i.e. every existing
+            # deployment), so the column those migrations add doesn't exist yet
+            # when schema.sql itself runs.
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_company_owner_map_region "
+                "ON company_owner_map(country_id, region_id)"
+            )
+            await self._conn.commit()
+            await self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
         logger.info("Database initialized at %s", self.path)
 
@@ -201,10 +216,29 @@ class DatabaseBase:
             ("mercenary_mu_agg", "total_rarity_weighted REAL NOT NULL DEFAULT 0"),
             ("mercenary_mu_agg", "total_rarity_weight REAL NOT NULL DEFAULT 0"),
         ]
+        # Skip columns that already exist instead of unconditionally firing
+        # every ALTER TABLE and catching the "duplicate column" error: on a
+        # database that's already migrated (every restart after the first),
+        # that used to mean 30+ write-locked statements for nothing, each
+        # able to block for up to busy_timeout (60s) under contention from
+        # the discord bot's own simultaneous startup against this same file
+        # — the dominant cause of multi-minute downtime on a restart. A
+        # PRAGMA table_info read needs no write lock under WAL, so checking
+        # first costs nothing and this loop becomes a true no-op once
+        # migrated.
+        table_cols: dict[str, set[str]] = {}
         for table, column_def in migrations:
+            if table not in table_cols:
+                cur = await self._conn.execute(f"PRAGMA table_info({table})")
+                rows = await cur.fetchall()
+                table_cols[table] = {row[1] for row in rows}
+            column_name = column_def.split()[0]
+            if column_name in table_cols[table]:
+                continue
             try:
                 await self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
                 await self._conn.commit()
+                table_cols[table].add(column_name)
             except Exception:
                 pass  # column already exists — ignore
 

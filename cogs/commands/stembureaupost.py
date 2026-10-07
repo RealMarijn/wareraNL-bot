@@ -129,7 +129,6 @@ class StembureauPostModal2(discord.ui.Modal, title="Nieuwe stemronde (2/2)"):
             str(self.stappenplan).strip(),
             "## Stemopties",
             f":white_check_mark: Akkoord – {str(self.akkoord_reden).strip()}",
-            f":ballot_box_with_check: Akkoord, maar met aanpassingen (zie opmerking in {self._debat_link}).",
             ":white_circle: Onthouden van stemmen",
             f":x: Niet akkoord – {str(self.niet_akkoord_reden).strip()}",
             stemming_line,

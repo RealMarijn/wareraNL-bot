@@ -62,7 +62,6 @@ class StembureauArchiefPostModal(discord.ui.Modal, title="Nieuwe archiefpost"):
             f"> **Stemronde:** {str(self.stemronde_link).strip()}",
             "## Stemming",
             "(Aantal):white_check_mark: Akkoord",
-            "(Aantal):ballot_box_with_check: Akkoord, maar met aanpassingen",
             "(Aantal):white_circle: Onthouden van stemmen",
             "(Aantal):x: Niet akkoord",
             "Gesloten op datum dd-mm-jjjj uu:mm",

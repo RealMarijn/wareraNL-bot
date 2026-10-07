@@ -169,10 +169,27 @@ class DiscordBot(commands.Bot):
             }
 
     async def init_db(self) -> None:
+        from services.db.schema_version import SCHEMA_VERSION
+
         ext_db_path = self.config.get("external_db_path", "database/external.db")
         async with aiosqlite.connect(ext_db_path) as db:
             await db.execute("PRAGMA journal_mode=WAL")
             await db.execute("PRAGMA busy_timeout=60000")
+
+            # Everything below is a ~140-statement idempotent setup pass
+            # (CREATE TABLE/INDEX + migrations) that's a no-op after the
+            # first run — but every statement still needs the write lock,
+            # which rijksoverheid_web's own init of this same file contends
+            # for too on every simultaneous restart (deploy.sh restarts both
+            # back-to-back). A single cheap PRAGMA user_version read lets an
+            # already-migrated DB skip all of it; bump SCHEMA_VERSION
+            # (services/db/schema_version.py) whenever schema.sql or the
+            # migrations below change, to force exactly one re-run.
+            cur = await db.execute("PRAGMA user_version")
+            row = await cur.fetchone()
+            if (row[0] if row else 0) >= SCHEMA_VERSION:
+                return
+
             schema_sql = (Path("database") / "schema.sql").read_text(encoding="utf-8")
             for statement in schema_sql.split(";"):
                 stmt = statement.strip()
@@ -181,14 +198,30 @@ class DiscordBot(commands.Bot):
                         await db.execute(stmt)
                     except Exception:
                         pass
-            # Idempotent column migrations for DBs created before schema update
-            for _sql in [
-                "ALTER TABLE resistance_state ADD COLUMN resistance_max REAL DEFAULT 100.0",
-                "ALTER TABLE citizen_luck ADD COLUMN rarity_json TEXT",
-                "ALTER TABLE division_mu_overrides ADD COLUMN mu_id TEXT",
-            ]:
+            # Idempotent column migrations for DBs created before schema update.
+            # Checked against PRAGMA table_info first (a read — no write lock
+            # needed under WAL) so an already-migrated DB (every restart after
+            # the first) doesn't pay for a write-locked ALTER TABLE for
+            # nothing — this file is shared with rijksoverheid_web, which
+            # restarts around the same time on every deploy, so needless
+            # write-lock attempts here directly add to the other process's
+            # busy_timeout wait too.
+            migrations = [
+                ("resistance_state", "resistance_max REAL DEFAULT 100.0"),
+                ("citizen_luck", "rarity_json TEXT"),
+                ("division_mu_overrides", "mu_id TEXT"),
+            ]
+            table_cols: dict[str, set[str]] = {}
+            for table, column_def in migrations:
+                if table not in table_cols:
+                    cur = await db.execute(f"PRAGMA table_info({table})")
+                    rows = await cur.fetchall()
+                    table_cols[table] = {row[1] for row in rows}
+                column_name = column_def.split()[0]
+                if column_name in table_cols[table]:
+                    continue
                 try:
-                    await db.execute(_sql)
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
                 except Exception:
                     pass  # Column already exists
 
@@ -236,6 +269,8 @@ class DiscordBot(commands.Bot):
             except Exception:
                 self.logger.exception("init_db: identity_links primary-key migration failed")
 
+            await db.commit()
+            await db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await db.commit()
 
     async def _write_command_catalogue(self) -> None:

@@ -24,15 +24,41 @@ from discord import app_commands
 from discord.ext import commands
 from discord.ext.commands import Context
 
-from utils.checks import PRIVILEGED_ROLE_IDS, has_privileged_role, is_owner_or_admin
+from utils.checks import ADMIN_ROLE_ID, PRIVILEGED_ROLE_IDS, has_privileged_role, is_owner_or_admin
+
+# Congresvoorzitter — explicitly allowed to run /congres-analyse and
+# !rollen_check specifically, without being added to PRIVILEGED_ROLE_IDS
+# (which would also grant every other has_privileged_role()-gated command).
+CONGRESVOORZITTER_ROLE_ID = 1473703285394505728
 
 
 async def _owner_or_privileged(ctx: Context) -> bool:
     if await ctx.bot.is_owner(ctx.author):
         return True
     return isinstance(ctx.author, discord.Member) and bool(
-        {r.id for r in ctx.author.roles} & PRIVILEGED_ROLE_IDS
+        {r.id for r in ctx.author.roles} & (PRIVILEGED_ROLE_IDS | {CONGRESVOORZITTER_ROLE_ID})
     )
+
+
+def _is_owner_admin_or_congresvoorzitter() -> app_commands.check:
+    """app_commands check for /congres-analyse: owner, admin role, or congresvoorzitter."""
+
+    async def predicate(interaction: discord.Interaction) -> bool:
+        bot = interaction.client
+        if getattr(bot, "testing", False):
+            return True
+        if not getattr(bot, "_owner_id_cached", None):
+            app_info = await bot.application_info()
+            bot._owner_id_cached = app_info.owner.id
+        if interaction.user.id == bot._owner_id_cached:
+            return True
+        if interaction.guild and isinstance(interaction.user, discord.Member):
+            role_ids = {r.id for r in interaction.user.roles}
+            if role_ids & {ADMIN_ROLE_ID, CONGRESVOORZITTER_ROLE_ID}:
+                return True
+        raise app_commands.MissingPermissions(["owner_or_admin"])
+
+    return app_commands.check(predicate)
 
 
 class Owner(commands.Cog, name="owner"):
@@ -381,7 +407,7 @@ class Owner(commands.Cog, name="owner"):
         datum="Startdatum in formaat DD-MM-JJJJ (bijv. 07-02-2026). Laat leeg voor 7 februari 2026.",
         met_reacties="Reacties tellen (standaard: ja). Zet op nee voor een snellere analyse zonder reacties.",
     )
-    @is_owner_or_admin()
+    @_is_owner_admin_or_congresvoorzitter()
     async def congres_analyse(
         self, interaction: discord.Interaction, datum: str = "07-02-2026", met_reacties: bool = True
     ) -> None:
