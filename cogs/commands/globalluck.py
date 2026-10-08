@@ -284,6 +284,12 @@ class GlobalLuck(commands.Cog, name="globalluck"):
                 if not isinstance(tx, dict):
                     continue
                 opened_case = tx.get("itemCode", "")
+                # Only case1 (normal) and case2 (elite) count toward case
+                # luck — skip the wooden case (and any other future case
+                # type) entirely, see geluk.py's _fetch_all_case_transactions
+                # for the full explanation.
+                if opened_case not in ("case1", "case2"):
+                    continue
                 is_elite = item_rarities.get(opened_case) == "mythic"
                 received = tx.get("item") or {}
                 item_code = (
