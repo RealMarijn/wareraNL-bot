@@ -671,6 +671,14 @@ class Geluk(commands.Cog, name="geluk"):
                 if not isinstance(tx, dict):
                     continue
                 opened_case = tx.get("itemCode", "")
+                # Only case1 (normal) and case2 (elite) count toward case
+                # luck — skip the wooden case (and any other future case
+                # type) entirely, since its drops are resources (grain,
+                # iron, ...) with no rarity, which would otherwise fall
+                # through item_rarities' "common" default below and
+                # silently inflate the normal-case common count.
+                if opened_case not in ("case1", "case2"):
+                    continue
                 is_elite = item_rarities.get(opened_case) == "mythic"
                 # "itemCode" is the *case* that was opened; the *received* drop is in item.code
                 received_item = tx.get("item") or {}
@@ -946,15 +954,18 @@ class Geluk(commands.Cog, name="geluk"):
             else:
                 # Normal cases table
                 if total_counted > 0 and type != "elite":
-                    analysed_note = (
-                        f"_{total_counted:,} meest recente case openings_"
-                        if aantal_cases is not None
-                        else f"_{total_counted:,} case openings gevonden_"
-                    )
+                    # Only show a note when analysing a capped recent subset
+                    # (aantal_cases) — the exact total is already given by
+                    # the "Cases geopend" field above, via the API's own
+                    # count, so a redundant "X case openings gevonden" line
+                    # isn't needed for the full-history case.
                     table = _build_luck_table(total_counted, normal_counts)
+                    value = f"```ansi\n{table}\n```"
+                    if aantal_cases is not None:
+                        value = f"_{total_counted:,} meest recente case openings_\n{value}"
                     embed.add_field(
                         name="🎲 Case geluk",
-                        value=f"{analysed_note}\n```ansi\n{table}\n```",
+                        value=value,
                         inline=False,
                     )
 

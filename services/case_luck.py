@@ -137,6 +137,12 @@ async def fetch_case_transactions(
             if newest_id is None and tx_id:
                 newest_id = tx_id  # first item on the first page is the newest
             opened_case = tx.get("itemCode", "")
+            # Only case1 (normal) and case2 (elite) count toward case luck —
+            # skip the wooden case (and any other future case type)
+            # entirely, see cogs/commands/geluk.py's
+            # _fetch_all_case_transactions for the full explanation.
+            if opened_case not in ("case1", "case2"):
+                continue
             is_elite = item_rarities.get(opened_case) == "mythic"
             received = tx.get("item") or {}
             item_code = (
