@@ -809,12 +809,20 @@ class Geluk(commands.Cog, name="geluk"):
                 except Exception as exc:
                     logger.warning("Geluk: cache lookup failed: %s", exc)
 
-            if live:
-                # Realtime mode: one fresh user.getUserById call gives the
-                # full, authoritative lifetime rarity counts directly via
-                # stats.case1/case2.byRarity — no more incremental
+            if live or cached_entry is None:
+                # Either the user explicitly asked for a live refresh, or
+                # there's simply no cached row yet (e.g. a non-NL player,
+                # who the daily NL sweep never covers, or someone the sweep
+                # hasn't reached today). Either way, one fresh user.getUserById
+                # call gives the full, authoritative lifetime rarity counts
+                # directly via stats.case1/case2.byRarity — no more incremental
                 # "since last cutoff" transaction fetching/merging needed,
-                # that field already IS the merged total.
+                # that field already IS the merged total. This is what keeps
+                # a cache-miss cheap (1 API call) instead of falling through
+                # to the full openCase transaction-history pagination below,
+                # which can be hundreds of paginated calls for an active
+                # player — that fallback is now only reachable through
+                # aantal_cases, which genuinely needs per-transaction order.
                 client = await self._get_client()
                 try:
                     raw = await client.get(
