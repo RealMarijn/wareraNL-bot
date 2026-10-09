@@ -395,6 +395,21 @@ class ParaatheadCog(CommandCogBase, name="paraatheid"):
                 if eco_waiting else None
             )
 
+            # Per-player eco cooldown list — same "no data means can reset now"
+            # rule as the per-player "cd" column above and /paraatheid speler.
+            # Sorted soonest-ready first so the list doubles as "who to ping
+            # next" for a war-mode switch.
+            eco_players_cd: list[tuple[str, float, bool]] = []
+            for p in players:
+                if p["skill_mode"] != "eco":
+                    continue
+                name_e = str(p["citizen_name"] or "?")
+                if p["can_reset"] or p["days_ago"] is None:
+                    eco_players_cd.append((name_e, 0.0, True))
+                else:
+                    eco_players_cd.append((name_e, max(0.0, 7 - p["days_ago"]), False))
+            eco_players_cd.sort(key=lambda t: t[1])
+
             summary_line = (
                 f"⚔️ **{war_count}** paraat ({war_pct:.0f}%)  •  "
                 f"✅ **{can_reset_count}** kunnen resetten"
@@ -532,12 +547,40 @@ class ParaatheadCog(CommandCogBase, name="paraatheid"):
                 stats_parts.append(
                     f"⏱️ Gem. eco-cd: **{avg_eco_cd_str}** ({len(eco_waiting)} eco-spelers wachtend)"
                 )
-            if stats_parts:
+            if stats_parts or eco_players_cd:
                 pill_emb = discord.Embed(
                     title=f"📊 Stats — {mu_name}",
-                    description="\n".join(stats_parts),
+                    description="\n".join(stats_parts) if stats_parts else None,
                     colour=colour,
                 )
+                if eco_players_cd:
+                    FIELD_MAX = 1024
+                    eco_lines = [
+                        f"**{name_e}** — ✅ kan nu resetten"
+                        if can_reset_e
+                        else f"**{name_e}** — ⏳ nog {rem_e:.1f}d"
+                        for name_e, rem_e, can_reset_e in eco_players_cd
+                    ]
+                    chunks: list[list[str]] = []
+                    current: list[str] = []
+                    current_len = 0
+                    for line in eco_lines:
+                        line_len = len(line) + 1
+                        if current and current_len + line_len > FIELD_MAX:
+                            chunks.append(current)
+                            current = []
+                            current_len = 0
+                        current.append(line)
+                        current_len += line_len
+                    if current:
+                        chunks.append(current)
+                    for i, chunk in enumerate(chunks):
+                        label = (
+                            f"🌾 Eco-spelers — cooldown ({len(eco_players_cd)})"
+                            if i == 0
+                            else "🌾 Eco-spelers — cooldown (vervolg)"
+                        )
+                        pill_emb.add_field(name=label, value="\n".join(chunk), inline=False)
                 await ctx.send(embed=pill_emb)
             return
 
