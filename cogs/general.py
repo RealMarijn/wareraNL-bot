@@ -135,7 +135,7 @@ class General(commands.Cog, name="general"):
         if message.author.bot:
             return
 
-        # Tagging MVC (176648226521350144) on the production guild → fixed reply.
+        # Tagging MVP (176648226521350144) on the production guild → fixed reply.
         # Checks raw content for an explicit <@id> tag rather than
         # message.mentions, since mentions also includes the replied-to
         # author on a ping-reply even without an actual @tag in the text.
@@ -148,10 +148,13 @@ class General(commands.Cog, name="general"):
             )
         ):
             try:
-                await message.channel.send("MVC is op dit moment niet bereikbaar")
+                await message.channel.send(
+                    "MVP is op dit moment niet bereikbaar. "
+                    "https://wakkerdamstembureau.replit.app/inschrijven"
+                )
             except discord.HTTPException as e:
                 self.bot.logger.error(
-                    f"Failed to send MVC-unreachable message for message {message.id}: {e}"
+                    f"Failed to send MVP-unreachable message for message {message.id}: {e}"
                 )
 
         content = message.content or ""
