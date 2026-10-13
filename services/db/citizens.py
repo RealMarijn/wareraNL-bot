@@ -598,20 +598,20 @@ class CitizensMixin:
         mu_name = exact or mu_names[0]
         if country_id:
             sql = (
-                "SELECT citizen_name, level, skill_mode, last_skills_reset_at "
+                "SELECT citizen_name, level, skill_mode, last_skills_reset_at, is_active "
                 "FROM citizen_levels WHERE mu_name = ? AND country_id = ? ORDER BY level DESC"
             )
             params2: tuple = (mu_name, country_id)
         else:
             sql = (
-                "SELECT citizen_name, level, skill_mode, last_skills_reset_at "
+                "SELECT citizen_name, level, skill_mode, last_skills_reset_at, is_active "
                 "FROM citizen_levels WHERE mu_name = ? ORDER BY level DESC"
             )
             params2 = (mu_name,)
         players: list[dict] = []
         async with self._conn.execute(sql, params2) as cur:
             async for row in cur:
-                name, level, mode, reset_at = row
+                name, level, mode, reset_at, is_active = row
                 days_ago: Optional[float] = None
                 can_reset = True
                 if reset_at:
@@ -628,6 +628,7 @@ class CitizensMixin:
                         "skill_mode": mode,
                         "days_ago": days_ago,
                         "can_reset": can_reset,
+                        "is_active": bool(is_active) if is_active is not None else True,
                     }
                 )
         return mu_name, players

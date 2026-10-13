@@ -280,6 +280,7 @@ class CitizenCache:
             mode = self._extract_skill_mode(obj) or "eco"
             reset_at = self._extract_last_skills_reset_at(obj)
             name = self._extract_name(obj)
+            is_active = self._extract_is_active(obj)
             days_ago: float | None = None
             can_reset = True
             if reset_at and mode != "war":
@@ -346,6 +347,7 @@ class CitizenCache:
                     "hunger_max": hunger_max,
                     "pill_icon": pill_icon,
                     "pill_expires_ts": pill_expires_ts,
+                    "is_active": is_active,
                 }
             )
             # Build tracking row (uses raw buff_end_at from API)

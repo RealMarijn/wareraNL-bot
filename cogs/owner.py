@@ -1171,7 +1171,6 @@ class Owner(commands.Cog, name="owner"):
         description="Toont actieve Nederlandse spelers (level ≥20, actief ≤72u) zonder militaire eenheid.",
     )
     @app_commands.describe(min_level="Minimaal level (standaard 20)")
-    @has_privileged_role()
     async def nl_niet_in_mu(
         self, interaction: discord.Interaction, min_level: int = 20
     ) -> None:
