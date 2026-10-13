@@ -410,6 +410,15 @@ class ParaatheadCog(CommandCogBase, name="paraatheid"):
                     eco_players_cd.append((name_e, max(0.0, 7 - p["days_ago"]), False))
             eco_players_cd.sort(key=lambda t: t[1])
 
+            # Inactive members (API's isActive flag — account-level inactivity,
+            # not "hasn't played recently"). Defaults to True (active) when
+            # missing so an older cache row never gets misflagged as inactive.
+            inactive_players = [
+                str(p["citizen_name"] or "?")
+                for p in players
+                if not p.get("is_active", True)
+            ]
+
             summary_line = (
                 f"⚔️ **{war_count}** paraat ({war_pct:.0f}%)  •  "
                 f"✅ **{can_reset_count}** kunnen resetten"
@@ -547,40 +556,46 @@ class ParaatheadCog(CommandCogBase, name="paraatheid"):
                 stats_parts.append(
                     f"⏱️ Gem. eco-cd: **{avg_eco_cd_str}** ({len(eco_waiting)} eco-spelers wachtend)"
                 )
-            if stats_parts or eco_players_cd:
+            def _add_chunked_field(emb: discord.Embed, lines: list[str], label_base: str) -> None:
+                FIELD_MAX = 1024
+                chunks: list[list[str]] = []
+                current: list[str] = []
+                current_len = 0
+                for line in lines:
+                    line_len = len(line) + 1
+                    if current and current_len + line_len > FIELD_MAX:
+                        chunks.append(current)
+                        current = []
+                        current_len = 0
+                    current.append(line)
+                    current_len += line_len
+                if current:
+                    chunks.append(current)
+                for i, chunk in enumerate(chunks):
+                    label = label_base if i == 0 else f"{label_base} (vervolg)"
+                    emb.add_field(name=label, value="\n".join(chunk), inline=False)
+
+            if stats_parts or eco_players_cd or inactive_players:
                 pill_emb = discord.Embed(
                     title=f"📊 Stats — {mu_name}",
                     description="\n".join(stats_parts) if stats_parts else None,
                     colour=colour,
                 )
                 if eco_players_cd:
-                    FIELD_MAX = 1024
                     eco_lines = [
                         f"**{name_e}** — ✅ kan nu resetten"
                         if can_reset_e
                         else f"**{name_e}** — ⏳ nog {rem_e:.1f}d"
                         for name_e, rem_e, can_reset_e in eco_players_cd
                     ]
-                    chunks: list[list[str]] = []
-                    current: list[str] = []
-                    current_len = 0
-                    for line in eco_lines:
-                        line_len = len(line) + 1
-                        if current and current_len + line_len > FIELD_MAX:
-                            chunks.append(current)
-                            current = []
-                            current_len = 0
-                        current.append(line)
-                        current_len += line_len
-                    if current:
-                        chunks.append(current)
-                    for i, chunk in enumerate(chunks):
-                        label = (
-                            f"🌾 Eco-spelers — cooldown ({len(eco_players_cd)})"
-                            if i == 0
-                            else "🌾 Eco-spelers — cooldown (vervolg)"
-                        )
-                        pill_emb.add_field(name=label, value="\n".join(chunk), inline=False)
+                    _add_chunked_field(
+                        pill_emb, eco_lines, f"🌾 Eco-spelers — cooldown ({len(eco_players_cd)})"
+                    )
+                if inactive_players:
+                    inactive_lines = [f"**{n}**" for n in inactive_players]
+                    _add_chunked_field(
+                        pill_emb, inactive_lines, f"💤 Inactieve spelers ({len(inactive_players)})"
+                    )
                 await ctx.send(embed=pill_emb)
             return
 
