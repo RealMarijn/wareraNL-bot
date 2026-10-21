@@ -14,7 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils.checks import has_privileged_role
+from utils.checks import is_owner_or_admin
 
 if TYPE_CHECKING:
     from bot import DiscordBot
@@ -48,7 +48,7 @@ class ExportBerichtenCog(commands.Cog, name="exportberichten"):
         name="exportberichten",
         description="Exporteer alle berichten in dit kanaal naar een tekstbestand (met afzender + tijdstip).",
     )
-    @has_privileged_role()
+    @is_owner_or_admin()
     async def exportberichten(self, interaction: discord.Interaction) -> None:
         channel = interaction.channel
         if not isinstance(channel, (discord.TextChannel, discord.Thread)):
