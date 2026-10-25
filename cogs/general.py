@@ -135,10 +135,11 @@ class General(commands.Cog, name="general"):
         if message.author.bot:
             return
 
-        # Tagging MVP (176648226521350144) on the production guild → fixed reply.
-        # Checks raw content for an explicit <@id> tag rather than
-        # message.mentions, since mentions also includes the replied-to
-        # author on a ping-reply even without an actual @tag in the text.
+        # Tagging this user (176648226521350144) on the production guild →
+        # fixed reply using their current server nickname. Checks raw content
+        # for an explicit <@id> tag rather than message.mentions, since
+        # mentions also includes the replied-to author on a ping-reply even
+        # without an actual @tag in the text.
         if (
             message.guild
             and message.guild.id == 1401530718223335496
@@ -147,14 +148,18 @@ class General(commands.Cog, name="general"):
                 or "<@!176648226521350144>" in message.content
             )
         ):
+            member = message.guild.get_member(176648226521350144)
+            if member is None:
+                try:
+                    member = await message.guild.fetch_member(176648226521350144)
+                except discord.HTTPException:
+                    member = None
+            name = member.display_name if member else "Deze gebruiker"
             try:
-                await message.channel.send(
-                    "MVP is op dit moment niet bereikbaar. "
-                    "https://wakkerdamstembureau.replit.app/inschrijven"
-                )
+                await message.channel.send(f"'{name}' heeft wel betere dingen te doen")
             except discord.HTTPException as e:
                 self.bot.logger.error(
-                    f"Failed to send MVP-unreachable message for message {message.id}: {e}"
+                    f"Failed to send unreachable message for message {message.id}: {e}"
                 )
 
         content = message.content or ""
