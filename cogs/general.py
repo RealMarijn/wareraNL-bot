@@ -156,7 +156,7 @@ class General(commands.Cog, name="general"):
                     member = None
             name = member.display_name if member else "Deze gebruiker"
             try:
-                await message.channel.send(f"'{name}' heeft wel betere dingen te doen")
+                await message.channel.send(f"{name} heeft wel betere dingen te doen")
             except discord.HTTPException as e:
                 self.bot.logger.error(
                     f"Failed to send unreachable message for message {message.id}: {e}"
