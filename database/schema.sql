@@ -811,7 +811,10 @@ CREATE TABLE IF NOT EXISTS citizen_online_log (
     was_online INTEGER NOT NULL DEFAULT 0,  -- 1 = online in last 12h, 0 = offline
     PRIMARY KEY (user_id, checked_at)
 );
-CREATE INDEX IF NOT EXISTS idx_citizen_online_log_user ON citizen_online_log(user_id, checked_at DESC);
+-- No secondary index here: the PK (user_id, checked_at) already covers the
+-- only query against this table (get_online_history, filtered by user_id and
+-- a checked_at range). A prior idx_citizen_online_log_user(user_id, checked_at
+-- DESC) duplicated that PK index for no benefit and cost ~2.5GB on disk.
 
 -- ── Country paraatheid (war-readiness) daily log ──────────────────────────────
 -- Once per day, snapshot war/eco counts for every known country so we can draw
