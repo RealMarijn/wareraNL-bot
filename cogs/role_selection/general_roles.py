@@ -8,11 +8,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.commands.bedrijvenbonuscheck import (
-    BedrijvenBonusCheckView,
-    _load_state,
-    _save_state,
-)
 from cogs.commands.pillreminder import PillReminderView
 from cogs.commands.pillreminder import _load_state as _pill_load_state
 from cogs.commands.pillreminder import _save_state as _pill_save_state
@@ -29,7 +24,6 @@ class GeneralRoles(commands.Cog, name="general_role_selection"):
         self._register_persistent_views(bot)
 
         # Re-register persistent views for special buttons
-        self.bot.add_view(BedrijvenBonusCheckView())
         self.bot.add_view(PillReminderView())
 
     def _register_persistent_views(self, bot) -> None:
@@ -201,23 +195,6 @@ class GeneralRoles(commands.Cog, name="general_role_selection"):
                             self.bot.logger.warning(
                                 "Failed to set permissions for channel %d: %s", ch_id, e
                             )
-
-        # Post the Company bonus check (bedrijven bonus check) button
-        bw_embed = discord.Embed(
-            title="🏭 Bedrijven notificaties",
-            description=(
-                "**📊 0% bonus check**\n"
-                "Ontvang een DM zodra een van je bedrijven **0% productiebonus** heeft.\n\n"
-                "**📍 Verhuisadvies**\n"
-                "Ontvang een DM als je een bedrijf winstgevend naar een regio met hogere bonus kunt verplaatsen.\n\n"
-                "Klik op de gewenste knop om je aan te melden. Klik opnieuw om je af te melden."
-            ),
-            colour=discord.Colour.blue(),
-        )
-        bw_msg = await target_channel.send(embed=bw_embed, view=BedrijvenBonusCheckView())
-        state = _load_state(self.bot.testing)
-        state["button_message_id"] = bw_msg.id
-        _save_state(state, self.bot.testing)
 
         # Post the Pill buff reminder button
         pill_embed = discord.Embed(

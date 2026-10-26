@@ -157,8 +157,6 @@ class DatabaseBase:
             # entire lifetime history on every run.
             ("citizen_luck", "last_seen_transaction_id TEXT"),
             ("global_citizen_luck", "last_seen_transaction_id TEXT"),
-            # company_bonus_watchers — game_user_id cached at runtime
-            ("company_bonus_watchers", "game_user_id TEXT"),
             # discord_allies — display label added post-launch
             ("discord_allies", "country_name TEXT"),
             # pill_reminders — in_game_user_id added post-launch; expires_at made nullable

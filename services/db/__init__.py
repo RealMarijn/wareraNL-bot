@@ -19,7 +19,6 @@ Mixin                Tables
 :mod:`.battle_drops`    ``battle_drops``
 :mod:`.battle_rankings` ``battle_hits``, ``processed_battles``
 :mod:`.article_tips`    ``article_tips``
-:mod:`.company_bonus`   ``company_bonus_watchers``, ``company_bonus_alerts``
 :mod:`.company_census`  ``company_census``, ``company_census_runs``, ``region_snapshots``
 :mod:`.company_tax`     ``company_tax_revenue``, ``worker_company_map``
 :mod:`.damage_projection` ``alliance_countries``, ``citizen_combat_state``
@@ -46,12 +45,10 @@ from .extension_auth import ExtensionAuthMixin
 from .battle_drops import BattleDropsMixin
 from .battle_rankings import BattleRankingsMixin
 from .citizens import CitizensMixin
-from .company_bonus import CompanyBonusMixin
 from .company_census import CompanyCensusMixin
 from .company_tax import CompanyTaxMixin
 from .country_proxy import CountryProxyMixin
 from .damage_projection import DamageProjectionMixin
-from .company_move_advice import CompanyMoveAdviceMixin
 from .daily_dmg import DailyDmgMixin
 from .damage_history import DamageHistoryMixin
 from .discord_allies import DiscordAlliesMixin
@@ -108,11 +105,9 @@ class Database(
     BattleDropsMixin,
     BattleRankingsMixin,
     ArticleTipsMixin,
-    CompanyBonusMixin,
     CompanyCensusMixin,
     CompanyTaxMixin,
     DamageProjectionMixin,
-    CompanyMoveAdviceMixin,
     PillRemindersMixin,
     PillTrackingMixin,
     TxCacheMixin,
