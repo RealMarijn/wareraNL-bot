@@ -514,7 +514,6 @@ class General(commands.Cog, name="general"):
         "generate_embeds": "🖼️",
         "bonuscog": "🏭",
         "bedrijfswinstcog": "💰",
-        "bedrijvenbonuscheck": "💰",
         "buddysysteemcog": "🤝",
         "ecobuildcog": "🌱",
         "geluk": "🍀",
