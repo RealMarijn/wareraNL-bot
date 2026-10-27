@@ -356,6 +356,44 @@
         }
       }
     },
+    "/article.getPinnedArticles": {
+      "post": {
+        "tags": [
+          "article"
+        ],
+        "description": "Retrieves the globally pinned articles (official WarEra announcements, e.g. patch notes like v0.27). Confirmed live and reachable with our normal keys; takes no parameters.",
+        "summary": "Get pinned articles",
+        "operationId": "article.getPinnedArticles",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "_id": "6ade08f7899288ce9f0bfe36",
+                    "title": "v0.27",
+                    "content": "<h1>War Era v0.27</h1>..."
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
     "/article.getWelcomeArticleByCountryId": {
       "post": {
         "tags": [
@@ -403,6 +441,50 @@
                 "required": [
                   "countryId"
                 ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assetSale.getLastSkinGifts": {
+      "post": {
+        "tags": [
+          "assetSale"
+        ],
+        "description": "Retrieves a live feed of the most recent skin gifts bought between players. Confirmed live and reachable with our normal keys; takes no parameters.",
+        "summary": "Get last skin gifts",
+        "operationId": "assetSale.getLastSkinGifts",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "createdAt": "2026-10-26T20:46:36.181Z",
+                    "buyer": "6990e66411434f14b0ebde57",
+                    "giftedTo": "6a036f6a29ebbd4329479b21",
+                    "skins": [
+                      {
+                        "key": "pumpkinHead",
+                        "slot": "helmet"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
                 "additionalProperties": false
               }
             }
@@ -954,7 +1036,7 @@
         "tags": [
           "company"
         ],
-        "description": "Retrieves the production bonus information for a specific company",
+        "description": "Retrieves the production bonus information for a specific company. Re-verified live after the v0.27 update (2026-10-26, companies-get-employees patch): the response shrank a lot — strategicBonus, ethicSpecializationBonus and ethicDepositBonus are gone (party ethics and strategic-resource production bonuses were both removed this patch), leaving only depositBonus and total. depositBonus is now always 0 on every company we checked, since this same patch also turned off deposits entirely (country specialization removed) — the field still exists but there's currently no way for it to be non-zero. There is no separate region-level production-bonus endpoint; a company's own +5% core-region bonus (new in v0.27) is applied server-side and isn't broken out anywhere in this response.",
         "summary": "Get company production bonus",
         "operationId": "company.getProductionBonus",
         "responses": {
@@ -963,11 +1045,8 @@
             "content": {
               "application/json": {
                 "example": {
-                  "strategicBonus": 0,
-                  "depositBonus": 30,
-                  "ethicSpecializationBonus": 0,
-                  "ethicDepositBonus": 30,
-                  "total": 60
+                  "depositBonus": 0,
+                  "total": 0
                 }
               }
             }
@@ -1000,7 +1079,7 @@
         "tags": [
           "company"
         ],
-        "description": "Retrieves a ranked list of regions with production bonuses for a specific item code",
+        "description": "Retrieves a ranked list of regions with production bonuses for a specific item code. Re-verified live after the v0.27 update (2026-10-26): still responds 200 but now always returns an empty array, since this same patch turned off deposits entirely (country specialization removed) and the frontend no longer calls this procedure at all — it's effectively dead, though still technically reachable.",
         "summary": "Get recommended regions by item code",
         "operationId": "company.getRecommendedRegionIdsByItemCode",
         "responses": {
@@ -1705,6 +1784,37 @@
         }
       }
     },
+    "/gameConfig.getMaxBountyRate": {
+      "post": {
+        "tags": [
+          "gameConfig"
+        ],
+        "description": "Retrieves the current server-wide cap on bounty rate. Confirmed live and reachable with our normal keys; tolerates both no input at all and an empty {} — unlike gameStat.getPpMoneyValue, it doesn't reject an object body with a void-input error, so it's not listed as a void-input procedure.",
+        "summary": "Get max bounty rate",
+        "operationId": "gameConfig.getMaxBountyRate",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": 0.91
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
     "/gameConfig.getDates": {
       "post": {
         "tags": [
@@ -1971,6 +2081,37 @@
                 "required": [
                   "itemCode"
                 ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gameStat.getPpMoneyValue": {
+      "post": {
+        "tags": [
+          "gameStat"
+        ],
+        "description": "Retrieves the current money value of one production point (used e.g. to turn an employee's raw Production stat into a wage, per the v0.27 patch's employee system). Confirmed live and reachable with our normal keys. Its real input schema is z.void(), not an empty object — an empty {} answers 400 'Expected void, received object' — but this never matters through this site's own proxy/explorer, which only ever sends an 'input' query param when the request body is non-empty, so a param-less form here already calls it correctly.",
+        "summary": "Get money value per production point",
+        "operationId": "gameStat.getPpMoneyValue",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": 0.1012
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
                 "additionalProperties": false
               }
             }
@@ -2250,6 +2391,63 @@
         }
       }
     },
+    "/itemTrading.getItemTrading": {
+      "post": {
+        "tags": [
+          "itemTrading"
+        ],
+        "description": "Retrieves one item's trading document. values holds the last 30 days, oldest first, with the last row being the current (in-progress) day — confirmed live: avgValue always equals totalValue / totalQuantity on every row, and currentValue equals the last row's avgValue. sellOrders/buyOrders came back empty on every item checked, so they're typed unknown[] here rather than guessed at. An item with no trading record at all (e.g. a toolbox) answers 404 NOT_FOUND, not an empty document.",
+        "summary": "Get an item's trading document",
+        "operationId": "itemTrading.getItemTrading",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": {
+                  "_id": "6827659fbeae77b79dd720a9",
+                  "itemCode": "steel",
+                  "minPrice": 2,
+                  "maxPrice": 20,
+                  "currentValue": 1.831375380165437,
+                  "values": [
+                    {
+                      "valueAt": "2026-09-28",
+                      "avgValue": 1.831375380165437,
+                      "totalValue": 996581.372000006,
+                      "totalQuantity": 544171,
+                      "transactionsCount": 9272
+                    }
+                  ],
+                  "sellOrders": [],
+                  "buyOrders": []
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "itemCode": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The item code to get the trading document for — a code with no trading record (e.g. a toolbox) 404s"
+                  }
+                },
+                "required": [
+                  "itemCode"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
     "/itemTrading.getPrices": {
       "post": {
         "tags": [
@@ -2279,6 +2477,106 @@
               "schema": {
                 "type": "object",
                 "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/managerOffer.getManyPaginated": {
+      "post": {
+        "tags": [
+          "managerOffer"
+        ],
+        "description": "Retrieves the paginated manager job market — companies currently looking for a manager (v0.27's new 'Managers' feature, added alongside hired employees: a manager is a player hired to run another player's company for a cut of its production). Confirmed live and reachable with our normal keys. Params are a guess by analogy with this spec's other getManyPaginated endpoints (limit/cursor) — not confirmed against a real zod error, since this procedure doesn't reject unknown or missing fields.",
+        "summary": "Get manager job offers",
+        "operationId": "managerOffer.getManyPaginated",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": {
+                  "items": [
+                    {
+                      "_id": "6adfbc089f5d34f2afbc0dcc",
+                      "company": "69aaf33f7a78c9de8531a17c",
+                      "user": "698dca789b436260a211690a",
+                      "region": "6813b7069403bc4170a5d825",
+                      "rateManagement": 0.012997,
+                      "maxHourlyWage": 0.142967,
+                      "citizenship": "6813b6d446e731854c7ac7fe",
+                      "createdAt": "2026-10-26T20:46:00.048Z",
+                      "updatedAt": "2026-10-26T20:46:00.048Z"
+                    }
+                  ],
+                  "nextCursor": null
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "limit": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 10,
+                    "description": "Results per page (unconfirmed, by analogy with similar endpoints)"
+                  },
+                  "cursor": {
+                    "type": "string",
+                    "description": "Pagination cursor for next page (unconfirmed, by analogy with similar endpoints)"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/managerOffer.getWageStats": {
+      "post": {
+        "tags": [
+          "managerOffer"
+        ],
+        "description": "Retrieves current market-wide manager wage stats (v0.27's new 'Managers' feature) — the allowed pay range per Management point that the game enforces (80%-120% of the average), and the current top offer. Confirmed live and reachable with our normal keys; takes no parameters.",
+        "summary": "Get manager wage stats",
+        "operationId": "managerOffer.getWageStats",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": {
+                  "allowedRange": {
+                    "min": 0.095314,
+                    "max": 0.142972,
+                    "average": 0.119143,
+                    "source": "market"
+                  },
+                  "topOffer": 0.142967,
+                  "topEligibleOffer": null
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
                 "additionalProperties": false
               }
             }
@@ -2692,6 +2990,91 @@
                     "description": "Filter parties by country ID"
                   }
                 },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/poll.getPoll": {
+      "post": {
+        "tags": [
+          "poll"
+        ],
+        "description": "Retrieves a poll by ID (v0.27's new 'Polls in articles' feature — a question with 2-10 answers attached to an article). Confirmed live and reachable with our normal keys. Exact output shape unconfirmed: we only verified a real pollId is required (a missing one 400s with a zod 'Required' error on the pollId field); we don't have a live poll ID handy to see a real 200 response.",
+        "summary": "Get poll",
+        "operationId": "poll.getPoll",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": {}
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "pollId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The poll's ID"
+                  }
+                },
+                "required": [
+                  "pollId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/poll.getPollVoters": {
+      "post": {
+        "tags": [
+          "poll"
+        ],
+        "description": "Retrieves who voted for a given option on a poll (v0.27's new 'Polls in articles' feature says who voted for what is public). Confirmed live and reachable with our normal keys. Exact output shape unconfirmed: we only verified real pollId/optionId values are required (missing either one 400s with zod 'Required' errors naming both fields); we don't have a live poll ID handy to see a real 200 response.",
+        "summary": "Get poll voters",
+        "operationId": "poll.getPollVoters",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": []
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "pollId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The poll's ID"
+                  },
+                  "optionId": {
+                    "type": "number",
+                    "description": "The index of the poll option to list voters for"
+                  }
+                },
+                "required": [
+                  "pollId",
+                  "optionId"
+                ],
                 "additionalProperties": false
               }
             }
@@ -3858,6 +4241,80 @@
         }
       }
     },
+    "/tradingOrder.getTopOrdersPerItemCode": {
+      "post": {
+        "tags": [
+          "tradingOrder"
+        ],
+        "description": "Like tradingOrder.getTopOrders, but several order books in one call. Every requested itemCode is a key in the response, even an unknown one (which just gets two empty lists) — confirmed live. limit caps orders PER SIDE per item; omitting it returns one per side (same default as getTopOrders). The order objects share the same fields as getPublicOrdersByOwner's.",
+        "summary": "Get top orders for several items at once",
+        "operationId": "tradingOrder.getTopOrdersPerItemCode",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": {
+                  "steel": {
+                    "buyOrders": [
+                      {
+                        "_id": "6ae06f601272b0bc8ed99773",
+                        "user": "69c0232dd01b8ef2e57dd6d1",
+                        "itemCode": "steel",
+                        "quantity": 827,
+                        "price": 1.935,
+                        "offerAt": "2026-10-27T09:31:12.087Z",
+                        "type": "buy",
+                        "__v": 0
+                      }
+                    ],
+                    "sellOrders": [
+                      {
+                        "_id": "6ae072097a6fe6582b8ae17e",
+                        "user": "6a22c05f14c11a9c9edbb88c",
+                        "itemCode": "steel",
+                        "quantity": 486,
+                        "price": 1.936,
+                        "offerAt": "2026-10-27T09:42:33.011Z",
+                        "type": "sell",
+                        "__v": 0
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "itemCodes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "The item codes to get order books for"
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "description": "Max orders to return PER SIDE per item (default: 1 per side)"
+                  }
+                },
+                "required": [
+                  "itemCodes"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
     "/transaction.getPaginatedTransactions": {
       "post": {
         "tags": [
@@ -4328,12 +4785,99 @@
         }
       }
     },
+    "/work.getLastByEmployee": {
+      "post": {
+        "tags": [
+          "work"
+        ],
+        "description": "Retrieves the most recent work entry/entries for one employee (v0.27's new hired-employee system, added when the job market was removed). Confirmed live and reachable with our normal (non-premium) keys. Real output shape unconfirmed: employee IDs come from employee.getMyEmployees, which requires a logged-in session and isn't reachable with an API key, so this could only be probed with a dummy ID (returns an empty array, no error).",
+        "summary": "Get last work entry by employee",
+        "operationId": "work.getLastByEmployee",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": []
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The employee's ID (not a user/citizen ID)"
+                  }
+                },
+                "required": [
+                  "employeeId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/work.getStatsByEmployee": {
+      "post": {
+        "tags": [
+          "work"
+        ],
+        "description": "Retrieves one hired employee's daily work stats over a period of days (v0.27's new hired-employee system, added when the job market was removed). Confirmed live and reachable with our normal (non-premium) keys — unlike work.getStatsByCompany/ByUserId this does NOT require WarEra Premium. Real output shape unconfirmed: employee IDs come from employee.getMyEmployees, which requires a logged-in session and isn't reachable with an API key, so this could only be probed with a dummy ID (returns an empty array, no error). Likely mirrors the dailyDate/total-style shape of work.getStatsByCompany.",
+        "summary": "Get work stats by employee",
+        "operationId": "work.getStatsByEmployee",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "example": []
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The employee's ID (not a user/citizen ID)"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 60,
+                    "default": 30,
+                    "description": "Number of days of history to return (max 60) — unconfirmed, by analogy with work.getStatsByCompany/ByUserId"
+                  }
+                },
+                "required": [
+                  "employeeId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
     "/work.getStatsByCompany": {
       "post": {
         "tags": [
           "work"
         ],
-        "description": "Retrieves a company's daily work stats (aggregated across all its workers) over a period of days. Requires the calling account to have WarEra Premium; undocumented in WarEra's own public API reference.",
+        "description": "Retrieves a company's daily work stats over a period of days. Requires the calling account to have WarEra Premium; undocumented in WarEra's own public API reference. Re-verified live after the v0.27 update (2026-10-26, companies-get-employees patch): fields are a subset of selfWork/wage/employeeProd/automatedEngine depending on what that company actually earned that day (zero-valued fields are sometimes omitted entirely, not just set to 0) — employeeProd is production from hired employees (v0.27+); there is no workerProd here (that legacy job-market field only ever appeared on work.getStatsByUserId, scoped to the worker/user, not the hiring company).",
         "summary": "Get work stats by company",
         "operationId": "work.getStatsByCompany",
         "responses": {
@@ -4343,11 +4887,12 @@
               "application/json": {
                 "example": [
                   {
-                    "dailyDate": "2026-08-25",
-                    "total": 223.2,
-                    "wage": 0,
-                    "employeeProd": 0,
-                    "automatedEngine": 223.2
+                    "dailyDate": "2026-10-26",
+                    "total": 367.15,
+                    "wage": 0.653205,
+                    "employeeProd": 7.15,
+                    "selfWork": 213,
+                    "automatedEngine": 147
                   }
                 ]
               }
@@ -4392,7 +4937,7 @@
         "tags": [
           "work"
         ],
-        "description": "Retrieves a user's daily work stats (production, wage, self-work vs. automated engine) over a period of days. Requires the calling account to have WarEra Premium; undocumented in WarEra's own public API reference.",
+        "description": "Retrieves a user's daily work stats (production, wage, self-work vs. automated engine) over a period of days. Requires the calling account to have WarEra Premium; undocumented in WarEra's own public API reference. Re-verified live after the v0.27 update (2026-10-26, companies-get-employees patch): now carries both workerProd (legacy — production as someone else's hired worker under the old job market, which v0.27 removed; present in history, should trend to 0 going forward) and employeeProd (new — production credited from this user's own hired employees).",
         "summary": "Get work stats by user ID",
         "operationId": "work.getStatsByUserId",
         "responses": {
@@ -4402,12 +4947,13 @@
               "application/json": {
                 "example": [
                   {
-                    "dailyDate": "2026-08-25",
-                    "total": 6987.78,
-                    "wage": 357.456,
-                    "employeeProd": 3904.45,
-                    "selfWork": 473.2,
-                    "automatedEngine": 2610.13
+                    "dailyDate": "2026-10-26",
+                    "total": 3389.75,
+                    "wage": 89.325192,
+                    "workerProd": 690,
+                    "employeeProd": 11.24,
+                    "selfWork": 1494.8,
+                    "automatedEngine": 1193.71
                   }
                 ]
               }

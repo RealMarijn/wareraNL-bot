@@ -633,10 +633,18 @@ class CitizenCache:
         Also checks root-level ``skillMode`` / ``mode`` fields as a direct fallback.
 
         Points spent in skill at level L = L*(L+1)//2.
-        Eco skills : entrepreneurship, energy, production, companies, management.
+        Eco skills : entrepreneurship, energy, production, companies,
+                     management, lootChance.
         War skills : attack, health, hunger, criticalChance, criticalDamages,
-                     armor, precision, dodge, lootChance.
+                     armor, precision, dodge.
         Ties go to eco.
+
+        lootChance counts as eco (despite living in the fighting skill
+        section) to catch the "lootbuild" meta: heavy loot-chance investment
+        with only light actual combat/eco spend, which otherwise got
+        misclassified as war even though these players function like eco
+        players for readiness purposes (they don't fight).
+
         Returns None when no skill data is available.
         """
         if not isinstance(obj, dict):
@@ -658,6 +666,7 @@ class CitizenCache:
             "production",
             "companies",
             "management",
+            "lootChance",
         }
         war_names = {
             "attack",
@@ -668,7 +677,6 @@ class CitizenCache:
             "armor",
             "precision",
             "dodge",
-            "lootChance",
         }
         eco_pts = 0
         war_pts = 0
