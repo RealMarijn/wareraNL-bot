@@ -7,6 +7,7 @@ Supported countries:
   - Nigeria           -> role 1530164551163842611
   - Luxembourg        -> role 1531298705892835498
   - Equatorial Guinea -> role 1547651313397928006
+  - Maldives          -> role looked up by name, created automatically if missing
 
 Lookup strategy (in order):
   1. Refresh the target countries live from the WarEra API into citizen_levels
@@ -47,7 +48,12 @@ _COUNTRY_NAMES: dict[str, str] = {
     "683ddd2c24b5a2e114af15fa": "Nigeria",
     "6813b6d446e731854c7ac7fb": "Luxemburg",
     "6873d0ea1758b40e712b5f31": "Equatoriaal-Guinea",
+    "6adf5d1d58ce8dc7669676bb": "Maldiven",
 }
+
+# Countries without a pre-created Discord role ID; the role is looked up by
+# name in the guild and created automatically (once) if it doesn't exist yet.
+_AUTO_CREATE_COUNTRIES: set[str] = {"6adf5d1d58ce8dc7669676bb"}
 
 
 def _is_active_in_country(
@@ -90,6 +96,52 @@ class NigeriaRoleSyncCog(TaskCogBase, name="nigeria_role_sync"):
     @nigeria_role_sync.before_loop
     async def _before(self) -> None:
         await self._wait_for_services()
+
+    async def _resolve_country_role(
+        self, guild: discord.Guild, country_id: str
+    ) -> discord.Role | None:
+        """Look up the Discord role for *country_id*, creating it if needed.
+
+        Countries with a fixed role ID in _COUNTRY_ROLES use that directly.
+        Countries without one (e.g. Maldives) are looked up by name in the
+        guild, and the role is created automatically on first run if it
+        doesn't exist yet.
+        """
+        role_id = _COUNTRY_ROLES.get(country_id)
+        if role_id:
+            role = guild.get_role(role_id)
+            if role is None:
+                logger.warning(
+                    "nigeria_role_sync: role %d for country %s not found in guild",
+                    role_id,
+                    country_id,
+                )
+            return role
+
+        name = _COUNTRY_NAMES.get(country_id, country_id)
+        role = discord.utils.find(lambda r: r.name == name, guild.roles)
+        if role is not None:
+            return role
+
+        try:
+            role = await guild.create_role(
+                name=name,
+                mentionable=True,
+                reason=f"country_role_sync: automatisch aangemaakt voor land {name}",
+            )
+            logger.info(
+                "nigeria_role_sync: created role %s (%d) for country %s",
+                role.name,
+                role.id,
+                country_id,
+            )
+            return role
+        except discord.Forbidden:
+            logger.warning(
+                "nigeria_role_sync: no permission to create role for country %s",
+                name,
+            )
+            return None
 
     async def _refresh_target_countries(self, country_ids: list[str]) -> set[str]:
         """Refresh target countries live before making any sync decisions."""
@@ -158,17 +210,12 @@ class NigeriaRoleSyncCog(TaskCogBase, name="nigeria_role_sync"):
             logger.warning("nigeria_role_sync: Netherlands role not found in guild")
             return {}
 
-        # Resolve Discord role objects; skip any that don't exist in this guild.
+        # Resolve Discord role objects; skip any that don't exist and can't be
+        # created, auto-creating roles for countries without a fixed role ID.
         country_discord_roles: dict[str, discord.Role] = {}
-        for country_id, role_id in _COUNTRY_ROLES.items():
-            role = guild.get_role(role_id)
-            if role is None:
-                logger.warning(
-                    "nigeria_role_sync: role %d for country %s not found in guild",
-                    role_id,
-                    country_id,
-                )
-            else:
+        for country_id in set(_COUNTRY_ROLES) | _AUTO_CREATE_COUNTRIES:
+            role = await self._resolve_country_role(guild, country_id)
+            if role is not None:
                 country_discord_roles[country_id] = role
 
         if not country_discord_roles:
