@@ -1,8 +1,8 @@
 """Background tasks and slash commands for per-channel MU subscriptions.
 
 Two features:
-  1. /weekschade mu:<name>  — post weekly damage for a MU every Monday at 01:00
-     NL time (just before the 02:00 weekly-damage reset).  Run the same command
+  1. /weekschade mu:<name>  — post weekly damage for a MU every Monday at 00:00
+     NL time (an hour before the 01:00 weekly-damage reset).  Run the same command
      again in the same channel to unsubscribe.
 
   2. /contract_gewonnen mu:<name>  — ping the channel whenever the chosen MU
@@ -150,8 +150,9 @@ class MuSubscriptionsCog(TaskCogBase, name="mu_subscriptions"):
         if not self._db or not self._client:
             return
         nl_now = datetime.now(_TZ_NL)
-        # Monday == 0, fire in the 01:00 hour
-        if nl_now.weekday() != 0 or nl_now.hour != 1:
+        # Monday == 0, fire in the 00:00 hour (an hour before the 01:00 reset,
+        # so we read last week's final numbers instead of racing the reset)
+        if nl_now.weekday() != 0 or nl_now.hour != 0:
             # Outside the posting window — reset so it's fresh for next Monday.
             if self._posted_this_week:
                 self._posted_this_week.clear()
@@ -260,7 +261,7 @@ class MuSubscriptionsCog(TaskCogBase, name="mu_subscriptions"):
         else:
             table = "*Geen schadedata beschikbaar.*"
 
-        footer_line = f"Totaal MU: {fmt_damage(weekly_total)} · Wekelijkse schade reset om 02:00 NL-tijd"
+        footer_line = f"Totaal MU: {fmt_damage(weekly_total)} · Wekelijkse schade reset om 01:00 NL-tijd"
         content = f"**⚔️ Weekschade {mu_name}**\n{table}\n_{footer_line}_"
 
         try:
