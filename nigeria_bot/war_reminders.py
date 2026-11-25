@@ -1,6 +1,6 @@
-"""Nigeria-bot feature: oil-saving bunker reminder + war-priority reminders.
+"""Nigeria-bot feature: oil-saving bunker reminder + war-priority reminder.
 
-Three independent reminders, all live-API-only (see ``nigeria_bot/oliegebruik.py``
+Two independent reminders, both live-API-only (see ``nigeria_bot/oliegebruik.py``
 for why: upgrade status and war priority are exactly the kind of thing an
 hourly-swept cache would misrepresent):
 
@@ -26,15 +26,11 @@ hourly-swept cache would misrepresent):
    bordering the enemy country is posted, so the base is ready exactly when
    priority runs out and both sides are free to attack again.
 
-3. **Priority-ending-soon notice.** Same tracked wars, fired at the 2-hour
-   mark — a plain heads-up, independent of the base reminder (which should
-   already have gone out 10 hours earlier).
-
-Both war-priority thresholds use ``hours_left <= N and not notified_N``, so a
+The war-priority threshold uses ``hours_left <= N and not notified_12h``, so a
 cycle missed during downtime still fires late on the next poll rather than
-being silently skipped, and each threshold is a one-shot per priority window
-— ``notified_12h``/``notified_2h`` are reset back to 0 whenever
-``priorityEndAt`` changes (a new window, e.g. after a battle in that war).
+being silently skipped, and it's a one-shot per priority window —
+``notified_12h`` is reset back to 0 whenever ``priorityEndAt`` changes (a new
+window, e.g. after a battle in that war).
 
 Discovering which wars Nigeria is in has no dedicated endpoint — the obvious
 candidate, ``war.getActiveWarBetweenCountries``, answers 403 "API tokens
@@ -75,7 +71,6 @@ _BUNKER_CHECK_DELAY = timedelta(hours=1)
 # building. The "notified_12h" column/flag name below predates this bump; it
 # still means "the base-reminder threshold", not literally 12 hours.
 _BASE_WARNING_HOURS = 14
-_PRIORITY_END_WARNING_HOURS = 2
 
 _POLL_MINUTES = 5
 
@@ -405,24 +400,23 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
             return  # Nigeria isn't actually a side of this war — not relevant.
 
         async with self._db.execute(
-            "SELECT priority_end_at, notified_12h, notified_2h FROM war_priority_tracking "
-            "WHERE war_id = ?",
+            "SELECT priority_end_at, notified_12h FROM war_priority_tracking WHERE war_id = ?",
             (war_id,),
         ) as cur:
             row = await cur.fetchone()
 
         if row is None or row[0] != priority_end_raw:
             # New war, or the API reports a new priorityEndAt (the window got
-            # extended/replaced) — (re)start the one-shot notification flags.
-            notified_12h, notified_2h = False, False
+            # extended/replaced) — (re)start the one-shot notification flag.
+            notified_12h = False
             await self._db.execute(
                 "INSERT OR REPLACE INTO war_priority_tracking "
-                "(war_id, enemy_country_id, priority_end_at, notified_12h, notified_2h) "
-                "VALUES (?, ?, ?, 0, 0)",
+                "(war_id, enemy_country_id, priority_end_at, notified_12h) "
+                "VALUES (?, ?, ?, 0)",
                 (war_id, enemy_country_id, priority_end_raw),
             )
         else:
-            notified_12h, notified_2h = bool(row[1]), bool(row[2])
+            notified_12h = bool(row[1])
 
         hours_left = (priority_end - datetime.now(timezone.utc)).total_seconds() / 3600
         if hours_left < 0:
@@ -435,17 +429,6 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
                 logger.exception("war_reminders: failed to send base reminder for war %s", war_id)
             await self._db.execute(
                 "UPDATE war_priority_tracking SET notified_12h = 1 WHERE war_id = ?", (war_id,)
-            )
-
-        if hours_left <= _PRIORITY_END_WARNING_HOURS and not notified_2h:
-            try:
-                await self._send_priority_ending_notice(enemy_country_id, priority_end)
-            except Exception:
-                logger.exception(
-                    "war_reminders: failed to send priority-ending notice for war %s", war_id
-                )
-            await self._db.execute(
-                "UPDATE war_priority_tracking SET notified_2h = 1 WHERE war_id = ?", (war_id,)
             )
 
     async def _enemy_country_name(
@@ -522,30 +505,6 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
         )
         await channel.send(embed=embed)
         logger.info("war_reminders: sent base reminder for war vs %s", enemy_name)
-
-    async def _send_priority_ending_notice(
-        self, enemy_country_id: str | None, priority_end: datetime
-    ) -> None:
-        channel = self.bot.get_channel(_WAR_PRIORITY_CHANNEL_ID)
-        if channel is None:
-            logger.warning("war_reminders: war-priority channel %d not found", _WAR_PRIORITY_CHANNEL_ID)
-            return
-
-        async with aiohttp.ClientSession() as sess:
-            enemy_name = await self._enemy_country_name(sess, enemy_country_id)
-
-        priority_end_str = discord.utils.format_dt(priority_end, style="R")
-        embed = discord.Embed(
-            title="⏰ Prioriteit eindigt binnenkort",
-            description=(
-                f"De prioriteit in de oorlog met **{enemy_name}** eindigt {priority_end_str}. "
-                "Vanaf dat moment kan iedereen weer aanvallen."
-            ),
-            colour=discord.Colour.red(),
-            timestamp=datetime.now(timezone.utc),
-        )
-        await channel.send(embed=embed)
-        logger.info("war_reminders: sent priority-ending notice for war vs %s", enemy_name)
 
 
 async def setup(bot: commands.Bot, db: aiosqlite.Connection) -> WarRemindersCog:
