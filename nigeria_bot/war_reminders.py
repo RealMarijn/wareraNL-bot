@@ -24,7 +24,7 @@ hourly-swept cache would misrepresent):
    turn on a military base (``base`` upgrade — 12h to activate, see
    ``gameConfig.getGameConfig().upgradesConfig.base``) in a Nigeria region
    bordering the enemy country is posted, so the base is ready exactly when
-   priority runs out.
+   priority runs out and both sides are free to attack again.
 
 3. **Priority-ending-soon notice.** Same tracked wars, fired at the 2-hour
    mark — a plain heads-up, independent of the base reminder (which should
@@ -34,7 +34,7 @@ Both war-priority thresholds use ``hours_left <= N and not notified_N``, so a
 cycle missed during downtime still fires late on the next poll rather than
 being silently skipped, and each threshold is a one-shot per priority window
 — ``notified_12h``/``notified_2h`` are reset back to 0 whenever
-``priorityEndAt`` changes (a new window, usually because priority flipped).
+``priorityEndAt`` changes (a new window, e.g. after a battle in that war).
 
 Discovering which wars Nigeria is in has no dedicated endpoint — the obvious
 candidate, ``war.getActiveWarBetweenCountries``, answers 403 "API tokens
@@ -70,7 +70,11 @@ _BUNKER_CHANNEL_ID = 1575086155018535023
 _WAR_PRIORITY_CHANNEL_ID = 1575086158931824694
 
 _BUNKER_CHECK_DELAY = timedelta(hours=1)
-_BASE_WARNING_HOURS = 12
+# A base takes 12h to activate — warn 2h earlier than that so there's actually
+# time to act before the window would otherwise close exactly as it finishes
+# building. The "notified_12h" column/flag name below predates this bump; it
+# still means "the base-reminder threshold", not literally 12 hours.
+_BASE_WARNING_HOURS = 14
 _PRIORITY_END_WARNING_HOURS = 2
 
 _POLL_MINUTES = 5
@@ -320,9 +324,9 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
             logger.warning("war_reminders: bunker channel %d not found", _BUNKER_CHANNEL_ID)
             return
         embed = discord.Embed(
-            title="🛢️ Bunker nog actief",
+            title="🛡️ Bunker nog actief",
             description=(
-                f"De verdedigingsslag in **{region_name}** is een uur geleden afgelopen, "
+                f"Het gevecht in **{region_name}** is een uur geleden afgelopen, "
                 "maar de bunker daar staat nog aan. Zet hem uit om olie te besparen."
             ),
             colour=discord.Colour.orange(),
@@ -408,8 +412,8 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
             row = await cur.fetchone()
 
         if row is None or row[0] != priority_end_raw:
-            # New war, or priority just flipped to a fresh window — (re)start
-            # the one-shot notification flags for this window.
+            # New war, or the API reports a new priorityEndAt (the window got
+            # extended/replaced) — (re)start the one-shot notification flags.
             notified_12h, notified_2h = False, False
             await self._db.execute(
                 "INSERT OR REPLACE INTO war_priority_tracking "
@@ -426,7 +430,7 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
 
         if hours_left <= _BASE_WARNING_HOURS and not notified_12h:
             try:
-                await self._send_base_reminder(sess, enemy_country_id, hours_left)
+                await self._send_base_reminder(sess, enemy_country_id, priority_end)
             except Exception:
                 logger.exception("war_reminders: failed to send base reminder for war %s", war_id)
             await self._db.execute(
@@ -435,7 +439,7 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
 
         if hours_left <= _PRIORITY_END_WARNING_HOURS and not notified_2h:
             try:
-                await self._send_priority_ending_notice(enemy_country_id, hours_left)
+                await self._send_priority_ending_notice(enemy_country_id, priority_end)
             except Exception:
                 logger.exception(
                     "war_reminders: failed to send priority-ending notice for war %s", war_id
@@ -485,7 +489,7 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
         return None
 
     async def _send_base_reminder(
-        self, sess: aiohttp.ClientSession, enemy_country_id: str | None, hours_left: float
+        self, sess: aiohttp.ClientSession, enemy_country_id: str | None, priority_end: datetime
     ) -> None:
         channel = self.bot.get_channel(_WAR_PRIORITY_CHANNEL_ID)
         if channel is None:
@@ -500,15 +504,17 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
         else:
             location_line = (
                 f"Zet een militaire basis aan in een regio die grenst aan **{enemy_name}**."
-                " (Geen grenzende Nigeriaanse regio automatisch gevonden — handmatig checken.)"
+                " (Geen grenzende Nigeriaanse regio automatisch gevonden, handmatig checken.)"
             )
 
+        priority_end_str = discord.utils.format_dt(priority_end, style="R")
         embed = discord.Embed(
             title="⚔️ Prioriteit loopt bijna af",
             description=(
-                f"Nog ongeveer **{hours_left:.1f} uur** prioriteit in de oorlog met "
-                f"**{enemy_name}**. Een basis duurt 12 uur om aan te zetten — nu beginnen "
-                "zorgt dat hij klaar is zodra de prioriteit omslaat.\n\n"
+                f"De prioriteit in de oorlog met **{enemy_name}** loopt af {priority_end_str}. "
+                "Vanaf dat moment kan iedereen weer aanvallen.\n\n"
+                "Een militaire basis duurt 12 uur om aan te zetten, dus begin nu zodat hij "
+                "klaar staat tegen die tijd.\n\n"
                 f"{location_line}"
             ),
             colour=discord.Colour.gold(),
@@ -518,7 +524,7 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
         logger.info("war_reminders: sent base reminder for war vs %s", enemy_name)
 
     async def _send_priority_ending_notice(
-        self, enemy_country_id: str | None, hours_left: float
+        self, enemy_country_id: str | None, priority_end: datetime
     ) -> None:
         channel = self.bot.get_channel(_WAR_PRIORITY_CHANNEL_ID)
         if channel is None:
@@ -528,11 +534,12 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
         async with aiohttp.ClientSession() as sess:
             enemy_name = await self._enemy_country_name(sess, enemy_country_id)
 
+        priority_end_str = discord.utils.format_dt(priority_end, style="R")
         embed = discord.Embed(
-            title="⏰ Prioriteit eindigt binnen 2 uur",
+            title="⏰ Prioriteit eindigt binnenkort",
             description=(
-                f"De prioriteit in de oorlog met **{enemy_name}** eindigt over ongeveer "
-                f"**{hours_left:.1f} uur**."
+                f"De prioriteit in de oorlog met **{enemy_name}** eindigt {priority_end_str}. "
+                "Vanaf dat moment kan iedereen weer aanvallen."
             ),
             colour=discord.Colour.red(),
             timestamp=datetime.now(timezone.utc),
