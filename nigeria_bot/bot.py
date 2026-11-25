@@ -84,6 +84,11 @@ class NigeriaBot(commands.Bot):
         import nigeria_bot.battle_watch as battle_watch
         await battle_watch.setup(self)
 
+        # Bunker-off reminder (1h after a defensive battle ends) + military
+        # base / war-priority reminders (12h and 2h before priority runs out).
+        import nigeria_bot.war_reminders as war_reminders
+        await war_reminders.setup(self, self.nigeria_db)
+
         # Daily unclaimed-XP reminder — checks all linked users at 22:00 NL
         # time daily, but only ever DMs PrinceRealMarijn for now (test mode,
         # see nigeria_bot/daily_xp_reminder.py's module docstring).
