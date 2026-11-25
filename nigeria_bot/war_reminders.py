@@ -65,6 +65,13 @@ NIGERIA_COUNTRY_ID = "683ddd2c24b5a2e114af15fa"
 _BUNKER_CHANNEL_ID = 1575086155018535023
 _WAR_PRIORITY_CHANNEL_ID = 1575086158931824694
 
+# Roles pinged alongside both the bunker-off and war-priority reminders.
+_PING_ROLE_IDS: tuple[int, ...] = (
+    1548185983273537657,
+    1548186028727214190,
+    1548186052475232347,
+)
+
 _BUNKER_CHECK_DELAY = timedelta(hours=1)
 # A base takes 12h to activate — warn 2h earlier than that so there's actually
 # time to act before the window would otherwise close exactly as it finishes
@@ -104,6 +111,10 @@ def _parse_ts(ts: object) -> datetime | None:
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _ping_roles_mention() -> str:
+    return " ".join(f"<@&{role_id}>" for role_id in _PING_ROLE_IDS)
 
 
 async def setup_schema(conn: aiosqlite.Connection) -> None:
@@ -327,7 +338,11 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
             colour=discord.Colour.orange(),
             timestamp=datetime.now(timezone.utc),
         )
-        await channel.send(embed=embed)
+        await channel.send(
+            content=_ping_roles_mention(),
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
         logger.info("war_reminders: sent bunker-off reminder for %s", region_name)
 
     # ── Features 2 & 3: war-priority warnings ───────────────────────────────
@@ -503,7 +518,11 @@ class WarRemindersCog(commands.Cog, name="war_reminders"):
             colour=discord.Colour.gold(),
             timestamp=datetime.now(timezone.utc),
         )
-        await channel.send(embed=embed)
+        await channel.send(
+            content=_ping_roles_mention(),
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
         logger.info("war_reminders: sent base reminder for war vs %s", enemy_name)
 
 
